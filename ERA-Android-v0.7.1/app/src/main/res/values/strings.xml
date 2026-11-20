@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">ERA Assistant</string>
+    <string name="era_accessibility_description">Optional screen observation for active app windows. When enabled by the user, ERA updates a local structured UI snapshot after screen changes. A UI action runs only after the user reviews and approves a one-shot action in ERA, then taps the visible ERA overlay in the target app. ERA does not automatically send messages, publish posts, make calls, purchase, delete or submit data.</string>
+</resources>
