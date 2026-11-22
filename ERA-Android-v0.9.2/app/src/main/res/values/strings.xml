@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">ERA Assistant</string>
+    <string name="era_accessibility_description">Optional screen observation for active app windows, including a separate user-selected External Chrome target. ERA reads visible accessibility nodes into a local structured snapshot. Password values, editable values and Chrome address-bar values are omitted; URL query strings and fragments are stripped in Chrome mode. UI actions require separate one-shot user approval and an overlay tap. ERA does not automatically send messages, publish posts, make calls, purchase, delete or submit data.</string>
+</resources>

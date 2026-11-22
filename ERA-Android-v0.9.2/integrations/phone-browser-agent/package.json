@@ -1,0 +1,15 @@
+{
+  "name": "era-phone-browser-agent-source-copy",
+  "version": "0.3.0",
+  "private": true,
+  "description": "Independent portable source copy and regression tests for ERA's browser-agent port",
+  "type": "commonjs",
+  "scripts": {
+    "check": "node --check runtime/browser-control.js && node --check runtime/browser-daemon.js && node --check runtime/semantic-browser.js && node --check runtime/semantic-core.js && node --check runtime/semantic-engine.js && node --check runtime/browser-actions.js && node --check runtime/browser-client.js && node --check runtime/era-browser-adapter.js",
+    "test": "node --test tests/*.test.js",
+    "bench": "node tests/benchmark.js"
+  },
+  "devDependencies": {
+    "puppeteer-core": "^25.18.1"
+  }
+}
