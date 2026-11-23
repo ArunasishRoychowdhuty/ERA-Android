@@ -62,7 +62,7 @@ class PhoneBrowserAgentPolicyTest {
     }
 
     @Test
-    fun sensitiveFieldsRequireConfirmationForReadAndFill() {
+    fun sensitiveFieldsAreHardBlockedEvenWhenUserConfirmationExists() {
         val password = node(
             name = "Password",
             tag = "input",
@@ -71,9 +71,10 @@ class PhoneBrowserAgentPolicyTest {
             sensitive = true,
             attributes = mapOf("type" to "password")
         )
-        assertTrue(PhoneBrowserAgentPolicy.canFill(password))
+        assertFalse(PhoneBrowserAgentPolicy.canFill(password))
         assertTrue(PhoneBrowserAgentPolicy.requiresConfirmation(password, "read"))
         assertTrue(PhoneBrowserAgentPolicy.requiresConfirmation(password, "fill"))
+        assertTrue(PhoneBrowserAgentPolicy.textEntryRejection(password, "not-a-secret").orEmpty().contains("blocked"))
     }
 
     @Test
@@ -142,6 +143,28 @@ class PhoneBrowserAgentPolicyTest {
         val otp = node(name = "Code", tag = "input", role = "textbox", editable = true,
             attributes = mapOf("autocomplete" to "one-time-code"))
         assertTrue(PhoneBrowserAgentPolicy.isSensitive(otp))
+        assertFalse(PhoneBrowserAgentPolicy.canFill(otp))
         assertTrue(PhoneBrowserAgentPolicy.requiresConfirmation(otp, "fill"))
+    }
+
+    @Test
+    fun credentialLikePayloadIsBlockedEvenForAnOrdinarySearchField() {
+        val search = node(name = "Search", tag = "input", role = "searchbox", editable = true)
+        assertTrue(PhoneBrowserAgentPolicy.canFill(search))
+        assertTrue(
+            PhoneBrowserAgentPolicy.textEntryRejection(search, "Bearer abcdefghijklmnopqrstuvwxyz")
+                .orEmpty().contains("credential")
+        )
+        assertTrue(
+            PhoneBrowserAgentPolicy.textEntryRejection(search, "password=my-secret-value") != null
+        )
+        assertTrue(PhoneBrowserAgentPolicy.textEntryRejection(search, "find badminton shops") == null)
+    }
+
+    @Test
+    fun shippingAddressIsNotMisclassifiedAsAPinField() {
+        val shipping = node(name = "Shipping address", tag = "input", role = "textbox", editable = true)
+        assertFalse(PhoneBrowserAgentPolicy.isSensitive(shipping))
+        assertTrue(PhoneBrowserAgentPolicy.canFill(shipping))
     }
 }

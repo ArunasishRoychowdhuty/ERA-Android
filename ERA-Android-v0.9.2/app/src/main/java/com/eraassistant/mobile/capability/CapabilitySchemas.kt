@@ -58,6 +58,7 @@ object CapabilitySchemas {
         "browser.webview.click" to CapabilityActionSchema(mapOf("ref" to str(true, 160), "targetId" to str(max = 160))),
         "browser.webview.fill" to CapabilityActionSchema(mapOf("ref" to str(true, 160), "text" to str(true, 4_000), "targetId" to str(max = 160))),
         "browser.webview.type" to CapabilityActionSchema(mapOf("ref" to str(true, 160), "text" to str(true, 4_000), "targetId" to str(max = 160))),
+        "browser.webview.focus_and_show_keyboard" to CapabilityActionSchema(mapOf("ref" to str(true, 160), "targetId" to str(max = 160))),
         "browser.webview.press_key" to CapabilityActionSchema(mapOf("ref" to str(true, 160), "key" to str(max = 32), "targetId" to str(max = 160))),
         "browser.webview.check" to CapabilityActionSchema(mapOf("ref" to str(true, 160), "targetId" to str(max = 160))),
         "browser.webview.uncheck" to CapabilityActionSchema(mapOf("ref" to str(true, 160), "targetId" to str(max = 160))),

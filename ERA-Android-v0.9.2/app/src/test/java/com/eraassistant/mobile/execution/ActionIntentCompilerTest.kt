@@ -33,6 +33,16 @@ class ActionIntentCompilerTest {
     }
 
     @Test
+    fun allSupportedDirectCommandsHaveActionSpecificAcceptanceCriteria() {
+        val torch = compile(AssistantCommand.SetTorch(true))!!
+        val volume = compile(AssistantCommand.VolumeUp)!!
+        val app = compile(AssistantCommand.LaunchApp(KnownApp.WHATSAPP))!!
+        assertTrue(torch.plan.steps.single().acceptanceCriteria.single().contains("torch.enabled=true"))
+        assertTrue(volume.plan.steps.single().acceptanceCriteria.single().startsWith("era.device.volume.adjust"))
+        assertTrue(app.plan.steps.single().acceptanceCriteria.single().startsWith("era.device.app.launch"))
+    }
+
+    @Test
     fun appLaunchUsesOnlyAnExplicitKnownAppLabel() {
         val compiled = compile(AssistantCommand.LaunchApp(KnownApp.WHATSAPP))!!
         assertEquals("device.app.launch", compiled.request.actionName)

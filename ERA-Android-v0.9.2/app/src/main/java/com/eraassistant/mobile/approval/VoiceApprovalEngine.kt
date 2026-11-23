@@ -113,8 +113,8 @@ class VoiceApprovalEngine(
         const val MIN_TTL_MS = 3_000L
         const val MAX_TTL_MS = 120_000L
 
-        private val APPROVE_PHRASES = setOf("approved", "approve", "অনুমোদিত", "অনুমোদন করছি")
-        private val DENY_PHRASES = setOf("cancel", "cancelled", "deny", "denied", "বাতিল", "না")
+        private val APPROVE_PHRASES = setOf("approved", "approve", "ok", "okay", "ঠিক আছে", "হ্যাঁ", "করো", "অনুমোদিত", "অনুমোদন করছি")
+        private val DENY_PHRASES = setOf("cancel", "cancelled", "deny", "denied", "no", "না", "বাতিল")
 
         private fun normalizePhrase(value: String): String =
             value.trim()

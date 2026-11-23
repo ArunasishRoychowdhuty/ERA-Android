@@ -114,11 +114,23 @@ class SkillEngine(private val capabilityRegistry: CapabilityRegistry? = null) {
     }
 
     fun findSkillForGoal(goal: String): SkillDefinition? {
-        val lowerGoal = goal.lowercase()
-        return skills.values.firstOrNull { skill ->
-            val pattern = skill.goalPattern.lowercase()
-            pattern.split('|').any { lowerGoal.contains(it.trim()) }
-        }
+        val normalizedGoal = goal.lowercase().replace(Regex("[^\\p{L}\\p{N}]+"), " ").trim()
+        if (normalizedGoal.isBlank()) return null
+        val ranked = skills.values.mapNotNull { skill ->
+            val score = skill.goalPattern.lowercase().split('|').map(String::trim).filter(String::isNotBlank)
+                .maxOfOrNull { phrase ->
+                    val normalizedPhrase = phrase.replace(Regex("[^\\p{L}\\p{N}]+"), " ").trim()
+                    when {
+                        normalizedPhrase.length < 3 -> 0
+                        normalizedGoal == normalizedPhrase -> 100
+                        normalizedGoal.contains(normalizedPhrase) -> 60 + normalizedPhrase.length.coerceAtMost(30)
+                        else -> 0
+                    }
+                } ?: 0
+            if (score > 0) skill to score else null
+        }.sortedWith(compareByDescending<Pair<SkillDefinition, Int>> { it.second }.thenBy { it.first.id })
+        if (ranked.isEmpty() || ranked.size > 1 && ranked[0].second == ranked[1].second) return null
+        return ranked.first().first
     }
 
     fun allSkills(): List<SkillDefinition> = skills.values.toList()

@@ -85,14 +85,28 @@ class PreviewPlanner(
     override suspend fun createPlan(userRequest: String): TaskPlan {
         val request = userRequest.trim()
         val lower = request.lowercase()
+        val requestsExplanationOnly = containsAny(
+            lower, "do not launch", "don't launch", "do not open", "don't open",
+            "only explain", "explain how", "শুধু বুঝিয়ে", "খুলবে না", "চালু করবে না"
+        )
+        val whatsappRequested = containsAny(lower, "whatsapp", "হোয়াটসঅ্যাপ", "হোয়াটসঅ্যাপ") &&
+            !isNegatedTarget(lower, "whatsapp", "হোয়াটসঅ্যাপ", "হোয়াটসঅ্যাপ")
+        val instagramRequested = containsAny(lower, "instagram", "ইনস্টাগ্রাম") &&
+            !isNegatedTarget(lower, "instagram", "ইনস্টাগ্রাম")
+        val requestsDraftOnly = containsAny(
+            lower, "message", "মেসেজ", "বার্তা", "draft"
+        ) && isNegatedAction(lower, "send", "sending", "পাঠাও", "পাঠানো")
         val steps = when {
-            containsAny(lower, "whatsapp", "হোয়াটসঅ্যাপ", "হোয়াটসঅ্যাপ") -> whatsappPlan()
-            containsAny(lower, "instagram", "ইনস্টাগ্রাম") -> instagramPlan()
+            requestsExplanationOnly -> explanationPlan()
+            requestsDraftOnly -> draftOnlyPlan()
+            whatsappRequested -> whatsappPlan(includeSend = !isNegatedAction(lower, "send", "sending", "পাঠাও", "পাঠানো"))
+            instagramRequested -> instagramPlan(includePublish = !isNegatedAction(lower, "publish", "share", "post", "প্রকাশ", "পোস্ট"))
             containsAny(lower, "facebook", "ফেসবুক", "post", "পোস্ট", "upload", "আপলোড") -> socialPostPlan()
-            containsAny(lower, "gmail", "ইমেইল", "email", "mail") -> emailPlan()
+            containsAny(lower, "gmail", "ইমেইল", "email", "mail") &&
+                !isNegatedTarget(lower, "gmail", "email", "mail") -> emailPlan()
             containsAny(lower, "form", "ফর্ম", "application", "আবেদন") -> formPlan()
             containsAny(lower, "call", "কল", "phone", "ফোন") -> callPlan()
-            containsAny(lower, "search", "খোঁজ", "সার্চ", "browser", "ওয়েবসাইট") -> browserPlan()
+            containsAny(lower, "search", "খোঁজ", "সার্চ", "browser", "ওয়েবসাইট", "product", "পণ্য") -> browserPlan()
             else -> genericPlan()
         }.map { step ->
             val missing = step.requiredCapabilities - availableCapabilities
@@ -114,21 +128,39 @@ class PreviewPlanner(
         return if (errors.isEmpty()) plan else plan.copy(note = "Plan validation failed: ${errors.joinToString()}")
     }
 
-    private fun whatsappPlan() = listOf(
-        step(1, "Open WhatsApp", "Launch the installed WhatsApp package.", caps = setOf(TaskCapability.APP_LAUNCH), criteria = listOf("WhatsApp is foreground")),
-        step(2, "Observe current UI", "Capture a fresh structured UI tree and identify the current page.", depends = listOf(1), caps = setOf(TaskCapability.SCREEN_OBSERVATION), criteria = listOf("Current WhatsApp page is identified")),
-        step(3, "Resolve recipient", "Find the exact requested contact. Pause for user selection if multiple matches exist.", depends = listOf(2), caps = setOf(TaskCapability.STRUCTURED_UI_ACTION), criteria = listOf("Exactly one intended chat is open")),
-        step(4, "Prepare message draft", "Enter only the exact user-provided message in the composer.", depends = listOf(3), caps = setOf(TaskCapability.TEXT_ENTRY), criteria = listOf("Draft text matches the request")),
-        step(5, "Review recipient and draft", "Show recipient and message for user verification.", depends = listOf(4), caps = setOf(TaskCapability.SCREEN_OBSERVATION, TaskCapability.USER_CONFIRMATION), criteria = listOf("Recipient and draft are verified")),
-        step(6, "Send message", "Sending is consequential and must be performed manually after explicit review.", depends = listOf(5), caps = setOf(TaskCapability.USER_CONFIRMATION), criteria = listOf("User manually confirms Send"), risk = TaskRisk.HIGH, reversible = false, approval = true)
+    private fun whatsappPlan(includeSend: Boolean = true) = buildList {
+        add(step(1, "Open WhatsApp", "Launch the installed WhatsApp package.", caps = setOf(TaskCapability.APP_LAUNCH), criteria = listOf("WhatsApp is foreground")))
+        add(step(2, "Observe current UI", "Capture a fresh structured UI tree and identify the current page.", depends = listOf(1), caps = setOf(TaskCapability.SCREEN_OBSERVATION), criteria = listOf("Current WhatsApp page is identified")))
+        add(step(3, "Resolve recipient", "Find the exact requested contact. Pause for user selection if multiple matches exist.", depends = listOf(2), caps = setOf(TaskCapability.STRUCTURED_UI_ACTION), criteria = listOf("Exactly one intended chat is open")))
+        add(step(4, "Prepare message draft", "Enter only the exact user-provided message in the composer.", depends = listOf(3), caps = setOf(TaskCapability.TEXT_ENTRY), criteria = listOf("Draft text matches the request")))
+        add(step(5, "Review recipient and draft", "Show recipient and message for user verification.", depends = listOf(4), caps = setOf(TaskCapability.SCREEN_OBSERVATION, TaskCapability.USER_CONFIRMATION), criteria = listOf("Recipient and draft are verified")))
+        if (includeSend) {
+            add(step(6, "Send message", "Sending is consequential and must be performed manually after explicit review.", depends = listOf(5), caps = setOf(TaskCapability.USER_CONFIRMATION), criteria = listOf("User manually confirms Send"), risk = TaskRisk.HIGH, reversible = false, approval = true))
+        }
+    }
+
+    private fun instagramPlan(includePublish: Boolean = true) = buildList {
+        add(step(1, "Open Instagram", "Launch Instagram and verify the intended account is active.", caps = setOf(TaskCapability.APP_LAUNCH), criteria = listOf("Instagram is foreground and the user confirms the account")))
+        add(step(2, "Choose post media", "Ask the user to select the exact photo or video from Android's media picker.", depends = listOf(1), caps = setOf(TaskCapability.MEDIA_PICKER), criteria = listOf("The intended media preview is visible")))
+        add(step(3, "Prepare caption and hashtags", "Prepare caption text and optional hashtags only from user-provided or user-approved content; keep it as a draft.", depends = listOf(2), caps = setOf(TaskCapability.TEXT_ENTRY), criteria = listOf("Caption and hashtags are editable and not published")))
+        add(step(4, "Review Instagram post", "Verify account, selected media, caption, tagged people, audience and visible settings.", depends = listOf(3), caps = setOf(TaskCapability.SCREEN_OBSERVATION, TaskCapability.USER_CONFIRMATION), criteria = listOf("User has reviewed the complete post preview")))
+        if (includePublish) {
+            add(step(5, "Share post", "Publishing is consequential. Stop and let the user manually tap Share after the final review.", depends = listOf(4), caps = setOf(TaskCapability.USER_CONFIRMATION), criteria = listOf("User manually confirms Share"), risk = TaskRisk.HIGH, reversible = false, approval = true))
+        }
+    }
+
+    private fun explanationPlan() = listOf(
+        step(1, "Explain without launching", "Provide instructions only. Do not open or launch another application.")
     )
 
-    private fun instagramPlan() = listOf(
-        step(1, "Open Instagram", "Launch Instagram and verify the intended account is active.", caps = setOf(TaskCapability.APP_LAUNCH), criteria = listOf("Instagram is foreground and the user confirms the account")),
-        step(2, "Choose post media", "Ask the user to select the exact photo or video from Android's media picker.", depends = listOf(1), caps = setOf(TaskCapability.MEDIA_PICKER), criteria = listOf("The intended media preview is visible")),
-        step(3, "Prepare caption and hashtags", "Prepare caption text and optional hashtags only from user-provided or user-approved content; keep it as a draft.", depends = listOf(2), caps = setOf(TaskCapability.TEXT_ENTRY), criteria = listOf("Caption and hashtags are editable and not published")),
-        step(4, "Review Instagram post", "Verify account, selected media, caption, tagged people, audience and visible settings.", depends = listOf(3), caps = setOf(TaskCapability.SCREEN_OBSERVATION, TaskCapability.USER_CONFIRMATION), criteria = listOf("User has reviewed the complete post preview")),
-        step(5, "Share post", "Publishing is consequential. Stop and let the user manually tap Share after the final review.", depends = listOf(4), caps = setOf(TaskCapability.USER_CONFIRMATION), criteria = listOf("User manually confirms Share"), risk = TaskRisk.HIGH, reversible = false, approval = true)
+    private fun draftOnlyPlan() = listOf(
+        step(
+            1,
+            "Prepare message draft",
+            "Prepare the message as a draft only. Do not send, share or submit it.",
+            caps = setOf(TaskCapability.MESSAGE_DRAFT),
+            criteria = listOf("Draft is prepared and remains unsent")
+        )
     )
 
     private fun socialPostPlan() = listOf(
@@ -198,4 +230,18 @@ class PreviewPlanner(
     )
 
     private fun containsAny(text: String, vararg phrases: String): Boolean = phrases.any(text::contains)
+
+    private fun isNegatedTarget(text: String, vararg targets: String): Boolean {
+        val negativeEnglish = listOf("don't use", "do not use", "never use", "don't open", "do not open", "without")
+        if (targets.any { target -> negativeEnglish.any { prefix -> "$prefix $target" in text } }) return true
+        val bengaliNegative = listOf("ব্যবহার করো না", "ব্যবহার করব না", "খুলবে না", "চালাবে না")
+        return targets.any { target -> bengaliNegative.any { suffix -> "$target $suffix" in text } }
+    }
+
+    private fun isNegatedAction(text: String, vararg actions: String): Boolean {
+        val prefixes = listOf("don't", "do not", "never", "without")
+        if (actions.any { action -> prefixes.any { prefix -> "$prefix $action" in text } }) return true
+        val bengaliNegative = listOf("না পাঠিয়ে", "পাঠিও না", "প্রকাশ করবে না", "পোস্ট করবে না", "শেয়ার করবে না")
+        return bengaliNegative.any(text::contains)
+    }
 }

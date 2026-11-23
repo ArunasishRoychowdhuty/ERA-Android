@@ -10,7 +10,9 @@ import android.provider.OpenableColumns
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.os.Build
+import android.util.DisplayMetrics
 import android.app.ActivityManager
+import android.app.AlarmManager
 import android.provider.ContactsContract
 import android.speech.RecognizerIntent
 import android.provider.Settings
@@ -26,6 +28,10 @@ import androidx.lifecycle.lifecycleScope
 import com.eraassistant.mobile.approval.VoiceApprovalEngine
 import com.eraassistant.mobile.approval.VoiceApprovalResult
 import com.eraassistant.mobile.execution.ActionIntentCompiler
+import com.eraassistant.mobile.execution.PlanStepActionCompiler
+import com.eraassistant.mobile.execution.SequenceStepDisposition
+import com.eraassistant.mobile.execution.SequenceStepOutcome
+import com.eraassistant.mobile.execution.SequenceProgress
 import com.eraassistant.mobile.storage.SafStorageManager
 import com.eraassistant.mobile.storage.StorageDocument
 import com.eraassistant.mobile.storage.StorageTextPreview
@@ -44,6 +50,13 @@ import com.eraassistant.mobile.device.DeviceController
 import com.eraassistant.mobile.device.AndroidCapabilityDiscovery
 import com.eraassistant.mobile.history.CommandHistoryStore
 import com.eraassistant.mobile.planner.PreviewPlanner
+import com.eraassistant.mobile.workflows.PersonalWorkflowCatalog
+import com.eraassistant.mobile.domain.DomainIntentClassifier
+import com.eraassistant.mobile.planning.TwoPassPlanningEngine
+import com.eraassistant.mobile.tools.AutonomyToolSelector
+import com.eraassistant.mobile.tools.ToolDataSensitivity
+import com.eraassistant.mobile.tools.ToolSelectionRequest
+import com.eraassistant.mobile.integration.IntegrationRouteContext
 import com.eraassistant.mobile.tasks.TaskExecutionCoordinator
 import com.eraassistant.mobile.tasks.TaskExecutionMonitor
 import com.eraassistant.mobile.tasks.TaskStepRecord
@@ -62,8 +75,11 @@ import com.eraassistant.mobile.capability.adapters.SafStorageCapabilityAdapter
 import com.eraassistant.mobile.recovery.ExecutionJournal
 import com.eraassistant.mobile.recovery.SharedPreferencesExecutionJournalPersistence
 import com.eraassistant.mobile.verification.VerificationEngine
+import com.eraassistant.mobile.verification.DeviceActionVerificationRule
 import com.eraassistant.mobile.skills.SkillEngine
 import com.eraassistant.mobile.memory.PersistentAgentMemory
+import com.eraassistant.mobile.memory.MemoryCategory
+import com.eraassistant.mobile.memory.MemoryRecord
 import com.eraassistant.mobile.memory.WorkflowLearningEngine
 import com.eraassistant.mobile.offline.OfflineOperationManager
 import com.eraassistant.mobile.statemachine.SharedPreferencesTaskStatePersistence
@@ -89,19 +105,37 @@ import com.eraassistant.mobile.screen.UiTreeJson
 import com.eraassistant.mobile.screen.UiScreenSnapshot
 import com.eraassistant.mobile.screen.PendingUiActionStore
 import com.eraassistant.mobile.screen.UiSnapshotFingerprint
+import com.eraassistant.mobile.screen.SemanticUiSelector
+import com.eraassistant.mobile.screen.SemanticUiSelectorEngine
+import com.eraassistant.mobile.screen.SelectorResolution
+import com.eraassistant.mobile.screen.ConsequentialActionPolicy
 import com.eraassistant.mobile.screen.VisualFrame
 import com.eraassistant.mobile.screen.VisualFrameStore
 import com.eraassistant.mobile.search.ProductSearchQuery
 import com.eraassistant.mobile.search.VisualFrameContentProvider
 import com.eraassistant.mobile.search.VisualProductRecognitionProvider
+import com.eraassistant.mobile.search.VisualScreenAnalysis
+import com.eraassistant.mobile.search.VisualControlCandidate
+import com.eraassistant.mobile.search.VisualScreenUnderstandingProvider
+import com.eraassistant.mobile.screen.VisualFrameIdentity
+import com.eraassistant.mobile.screen.VisualTargetProposal
 import com.eraassistant.mobile.social.InstagramPreparationPolicy
 import com.eraassistant.mobile.accessibility.ExternalChromeAgentPolicy
+import com.eraassistant.mobile.accessibility.EraAccessibilityService
 import com.eraassistant.mobile.shizuku.ShizukuBridgeManager
 import com.eraassistant.mobile.shizuku.ShizukuBridgeState
 import com.eraassistant.mobile.remote.RemoteGatewayApiClient
 import com.eraassistant.mobile.remote.RemoteGatewayPolicy
 import com.eraassistant.mobile.remote.RemoteGatewayStore
 import com.eraassistant.mobile.remote.RemoteSessionService
+import com.eraassistant.mobile.productivity.EraDatabase
+import com.eraassistant.mobile.productivity.SecurePayloadCipher
+import com.eraassistant.mobile.productivity.ReminderRepository
+import com.eraassistant.mobile.productivity.ManagedMemoryRepository
+import com.eraassistant.mobile.productivity.ReminderScheduler
+import com.eraassistant.mobile.productivity.CalendarSync
+import com.eraassistant.mobile.productivity.ReminderUiItem
+import com.eraassistant.mobile.productivity.ManagedMemoryUiItem
 import com.eraassistant.mobile.ui.ERAScreen
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -110,6 +144,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.collect
 import org.json.JSONObject
 
 class MainActivity : ComponentActivity() {
@@ -133,6 +168,8 @@ class MainActivity : ComponentActivity() {
     private var activeTaskCoordinator: TaskExecutionCoordinator? = null
     private val capabilityRegistry = CapabilityRegistry()
     private val voiceApprovalEngine = VoiceApprovalEngine()
+    private data class PendingUiConsequenceConfirmation(val binding: String, val summary: String)
+    private var pendingUiConsequenceConfirmation: PendingUiConsequenceConfirmation? = null
     private lateinit var executionJournal: ExecutionJournal
     private lateinit var taskStatePersistence: SharedPreferencesTaskStatePersistence
     private lateinit var verificationEngine: VerificationEngine
@@ -169,6 +206,10 @@ class MainActivity : ComponentActivity() {
     private var productSearchQuery by mutableStateOf("")
     private var productRecognitionStatus by mutableStateOf("")
     private var productRecognitionRunning by mutableStateOf(false)
+    private var visualScreenAnalysis by mutableStateOf<VisualScreenAnalysis?>(null)
+    private var visualScreenAnalysisStatus by mutableStateOf("")
+    private var visualScreenAnalysisRunning by mutableStateOf(false)
+    private var visualScreenAnalysisFrameId by mutableStateOf<String?>(null)
     private var pendingContactQueryForCall by mutableStateOf(false)
     private var aiProviderKind by mutableStateOf(AIProviderKind.LOCAL_ONLY)
     private var aiProviderModel by mutableStateOf("")
@@ -209,6 +250,19 @@ class MainActivity : ComponentActivity() {
     private var remoteGatewaySessionActive by mutableStateOf(false)
     private var remoteGatewayPairingBusy by mutableStateOf(false)
     private var remoteStatusRefreshJob: Job? = null
+
+    private lateinit var reminderRepository: ReminderRepository
+    private lateinit var managedMemoryRepository: ManagedMemoryRepository
+    private lateinit var reminderScheduler: ReminderScheduler
+    private lateinit var calendarSync: CalendarSync
+    private var reminders by mutableStateOf(emptyList<ReminderUiItem>())
+    private var managedMemories by mutableStateOf(emptyList<ManagedMemoryUiItem>())
+    private var agentMemoryRecords by mutableStateOf(emptyList<MemoryRecord>())
+    private var notificationPermissionGranted by mutableStateOf(false)
+    private var exactAlarmAllowed by mutableStateOf(false)
+    private var calendarPermissionsGranted by mutableStateOf(false)
+    private var productivityStatus by mutableStateOf("Your reminders and managed memory stay on this device.")
+    private var pendingCalendarReminderId: String? = null
 
     private val speechPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         microphonePermissionGranted = granted ||
@@ -258,6 +312,41 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    private val productivityNotificationPermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            notificationPermissionGranted = granted ||
+                Build.VERSION.SDK_INT < 33 ||
+                ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+            productivityStatus = if (notificationPermissionGranted) {
+                "Reminder notifications are enabled."
+            } else {
+                "Notification permission was denied. Reminders remain saved, but Android cannot show reminder notifications."
+            }
+        }
+
+    private val calendarPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
+            refreshProductivityPermissionStates()
+            if (calendarPermissionsGranted) {
+                val id = pendingCalendarReminderId
+                pendingCalendarReminderId = null
+                if (id != null) syncReminderToCalendar(id)
+            } else {
+                pendingCalendarReminderId = null
+                productivityStatus = "Calendar permission was denied. No event was added."
+            }
+        }
+
+    private val exactAlarmSettingsLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+            refreshProductivityPermissionStates()
+            productivityStatus = if (exactAlarmAllowed) {
+                "Exact alarm access enabled. Future reminders may use AlarmManager."
+            } else {
+                "Exact alarm access is off. WorkManager fallback remains available, but Android may delay delivery."
+            }
+        }
 
     private val instagramMediaPicker = registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) {
@@ -373,6 +462,11 @@ class MainActivity : ComponentActivity() {
         }
         voiceOutput = VoiceOutput(this)
         pendingUiActionStore = PendingUiActionStore(this)
+        // Pending UI approvals are process-local. Never restore any click or final Submit/Pay/Delete approval after restart.
+        if (pendingUiActionStore.isPending()) {
+            pendingUiActionStore.clearPending("Previous UI approval expired when ERA restarted. Capture the screen and approve again.")
+        }
+        pendingUiActionStore.revokeConsequenceApproval()
         contactAliasStore = ContactAliasStore(this)
         safStorageManager = SafStorageManager(this)
         storageFolderName = safStorageManager.rootName().orEmpty()
@@ -387,10 +481,29 @@ class MainActivity : ComponentActivity() {
         } else if (!executionJournal.isAvailable()) {
             status = "Execution journal is unavailable. Automated capability dispatch is disabled until its stored state can be read safely."
         }
-        verificationEngine = VerificationEngine()
+        verificationEngine = VerificationEngine(listOf(DeviceActionVerificationRule()))
         persistentAgentMemory = PersistentAgentMemory(this)
+        refreshAgentMemoryRecords()
         workflowLearningEngine = WorkflowLearningEngine(persistentAgentMemory)
         offlineOperationManager = OfflineOperationManager(this, capabilityRegistry)
+
+        val productivityDatabase = EraDatabase.get(this)
+        val productivityCipher = SecurePayloadCipher()
+        reminderRepository = ReminderRepository(productivityDatabase.reminders(), productivityCipher)
+        managedMemoryRepository = ManagedMemoryRepository(productivityDatabase.managedMemory(), productivityCipher)
+        reminderScheduler = ReminderScheduler(this)
+        calendarSync = CalendarSync(this)
+        refreshProductivityPermissionStates()
+        lifecycleScope.launch {
+            reminderRepository.observeUi().collect { reminders = it }
+        }
+        lifecycleScope.launch {
+            managedMemoryRepository.observeUi().collect { managedMemories = it }
+        }
+        lifecycleScope.launch {
+            runCatching { reminderScheduler.reschedulePending() }
+                .onFailure { productivityStatus = "Reminder recovery could not be completed: ${it.message ?: "Unknown error"}" }
+        }
 
         capabilityRegistry.register(AndroidDeviceCapabilityAdapter(this, deviceController))
         capabilityRegistry.register(NativeWebViewBrowserCapabilityAdapter { phoneBrowserAgentClient })
@@ -495,6 +608,11 @@ class MainActivity : ComponentActivity() {
                 visualFrame = visualFrame,
                 visualCaptureStatus = visualCaptureStatus,
                 onClearVisualFrame = ::clearVisualFrame,
+                visualScreenAnalysis = visualScreenAnalysis,
+                visualScreenAnalysisStatus = visualScreenAnalysisStatus,
+                visualScreenAnalysisRunning = visualScreenAnalysisRunning,
+                onAnalyzeVisualScreen = ::analyzeVisualScreen,
+                onDispatchVisualTarget = ::dispatchVisualTarget,
                 onVoiceSessionChange = { enabled ->
                     if (enabled) requestVoiceSessionStart() else stopVoiceSession()
                 },
@@ -524,9 +642,14 @@ class MainActivity : ComponentActivity() {
                         getSharedPreferences(ExternalChromeAgentPolicy.PREFS_NAME, MODE_PRIVATE).edit().clear().apply()
                         externalChromeTargetMode = false
                         externalChromeStatus = "Screen-inspection consent revoked. External Chrome target disabled."
+                        voiceApprovalEngine.clear()
+                        pendingUiConsequenceConfirmation = null
                         pendingUiActionStore.clearPending("Screen-inspection consent revoked; pending UI action cancelled.")
                         VisualFrameStore.clear()
                         visualFrame = null
+                        visualScreenAnalysis = null
+                        visualScreenAnalysisStatus = "Visual analysis cleared because screen-inspection consent was revoked."
+                        visualScreenAnalysisFrameId = null
                         visualCaptureStatus = "Visual frame cleared because screen-inspection consent was revoked."
                         getSharedPreferences("era_ui_snapshot", MODE_PRIVATE).edit().clear().apply()
                         uiSnapshot = ""
@@ -544,6 +667,8 @@ class MainActivity : ComponentActivity() {
                     approveUiAction(selector, if (forward) PendingUiActionStore.ACTION_SCROLL_FORWARD else PendingUiActionStore.ACTION_SCROLL_BACKWARD, "", resourceId)
                 },
                 onCancelUiAction = {
+                    voiceApprovalEngine.clear()
+                    pendingUiConsequenceConfirmation = null
                     pendingUiActionStore.clearPending("Pending UI action cancelled by user.")
                     uiActionStatus = pendingUiActionStore.result()
                     status = uiActionStatus
@@ -613,7 +738,25 @@ class MainActivity : ComponentActivity() {
                 onReloadUiSnapshot = ::reloadUiSnapshot,
                 onCopyUiSnapshot = ::copyUiSnapshot,
                 onCopyAiContext = ::copyAiContext,
-                onClearUiSnapshot = ::clearUiSnapshot
+                onClearUiSnapshot = ::clearUiSnapshot,
+                reminders = reminders,
+                managedMemories = managedMemories,
+                agentMemoryRecords = agentMemoryRecords,
+                notificationPermissionGranted = notificationPermissionGranted,
+                exactAlarmAllowed = exactAlarmAllowed,
+                calendarPermissionsGranted = calendarPermissionsGranted,
+                productivityStatus = productivityStatus,
+                onCreateReminder = ::createReminder,
+                onDeleteReminder = ::deleteReminder,
+                onSyncReminderToCalendar = ::syncReminderToCalendar,
+                onCreateMemory = ::createManagedMemory,
+                onDeleteMemory = ::deleteManagedMemory,
+                onClearManagedMemory = ::clearManagedMemory,
+                onDeleteAgentMemory = ::deleteAgentMemoryRecord,
+                onClearAgentMemory = ::clearAllAgentMemory,
+                onRequestNotificationPermission = ::requestProductivityNotificationPermission,
+                onRequestExactAlarmPermission = ::requestExactAlarmAccess,
+                onRequestCalendarPermissions = ::requestCalendarAccess
             )
         }
     }
@@ -781,6 +924,9 @@ class MainActivity : ComponentActivity() {
         contactSearchJob?.cancel()
         if (::historyStore.isInitialized) {
             refreshPermissionStatuses()
+            if (::calendarSync.isInitialized) refreshProductivityPermissionStates()
+            if (::persistentAgentMemory.isInitialized) refreshAgentMemoryRecords()
+            if (::reminderScheduler.isInitialized) lifecycleScope.launch { reminderScheduler.reschedulePending() }
             reloadUiSnapshot()
         }
     }
@@ -794,6 +940,174 @@ class MainActivity : ComponentActivity() {
             this, Manifest.permission.CAMERA
         ) == PackageManager.PERMISSION_GRANTED
         accessibilityServiceEnabled = AndroidCapabilityDiscovery(this).isEraAccessibilityServiceEnabled()
+    }
+
+    private fun refreshAgentMemoryRecords() {
+        if (!::persistentAgentMemory.isInitialized) return
+        agentMemoryRecords = MemoryCategory.values()
+            .flatMap { persistentAgentMemory.getCategoryRecords(it) }
+            .sortedByDescending { it.lastAccessedEpochMs }
+            .take(100)
+    }
+
+    private fun deleteAgentMemoryRecord(category: MemoryCategory, key: String) {
+        if (persistentAgentMemory.delete(category, key)) {
+            refreshAgentMemoryRecords()
+            productivityStatus = "Agent memory entry deleted."
+        }
+    }
+
+    private fun clearAgentMemoryCategory(category: MemoryCategory) {
+        val removed = persistentAgentMemory.clearCategory(category)
+        refreshAgentMemoryRecords()
+        productivityStatus = "Deleted $removed entries from ${category.name.lowercase()} memory."
+    }
+
+    private fun clearAllAgentMemory() {
+        persistentAgentMemory.clearAll()
+        refreshAgentMemoryRecords()
+        productivityStatus = "All legacy Agent Memory records were deleted."
+    }
+
+    /** Android is authoritative for runtime and special-access state. */
+    private fun refreshProductivityPermissionStates() {
+        notificationPermissionGranted = Build.VERSION.SDK_INT < 33 ||
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+        exactAlarmAllowed = Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
+            (getSystemService(ALARM_SERVICE) as AlarmManager).canScheduleExactAlarms()
+        calendarPermissionsGranted = calendarSync.let { it.hasPermissions() }
+    }
+
+    private fun requestProductivityNotificationPermission() {
+        if (Build.VERSION.SDK_INT < 33) {
+            notificationPermissionGranted = true
+            productivityStatus = "Android version does not require runtime notification permission."
+        } else {
+            productivityNotificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
+    private fun requestExactAlarmAccess() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            exactAlarmAllowed = true
+            productivityStatus = "Exact alarms are available on this Android version."
+            return
+        }
+        val intent = Intent(
+            Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM,
+            Uri.parse("package:$packageName")
+        )
+        runCatching { exactAlarmSettingsLauncher.launch(intent) }
+            .onFailure {
+                productivityStatus = "Exact-alarm settings could not be opened. WorkManager fallback remains enabled."
+            }
+    }
+
+    private fun requestCalendarAccess() {
+        if (calendarSync.hasPermissions()) {
+            calendarPermissionsGranted = true
+            productivityStatus = "Calendar access is already granted."
+        } else {
+            calendarPermissionLauncher.launch(CalendarSync.REQUIRED_PERMISSIONS)
+        }
+    }
+
+    private fun createReminder(title: String, delayMinutes: Long) {
+        lifecycleScope.launch {
+            runCatching {
+                val reminder = reminderRepository.create(title, delayMinutes)
+                reminderScheduler.schedule(reminder)
+                productivityStatus = if (notificationPermissionGranted) {
+                    "Reminder saved and scheduled on this device."
+                } else {
+                    "Reminder saved and scheduled. Enable notifications so Android can show it when due."
+                }
+            }.onFailure { error ->
+                productivityStatus = "Reminder was not saved: ${error.message ?: "Invalid reminder"}"
+            }
+        }
+    }
+
+    private fun deleteReminder(id: String) {
+        lifecycleScope.launch {
+            runCatching {
+                reminderScheduler.cancel(id)
+                reminderRepository.delete(id)
+                productivityStatus = "Reminder deleted from ERA."
+            }.onFailure { error ->
+                productivityStatus = "Reminder could not be deleted: ${error.message ?: "Unknown error"}"
+            }
+        }
+    }
+
+    private fun syncReminderToCalendar(id: String) {
+        if (!calendarSync.hasPermissions()) {
+            pendingCalendarReminderId = id
+            requestCalendarAccess()
+            return
+        }
+        lifecycleScope.launch {
+            val result = runCatching {
+                val row = reminderRepository.get(id) ?: error("Reminder no longer exists.")
+                if (row.calendarEventId != null) {
+                    productivityStatus = "This reminder is already linked to a Calendar event."
+                    return@launch
+                }
+                val title = reminderRepository.titleFor(row)
+                when (val synced = calendarSync.insert(title, row.triggerAtEpochMs)) {
+                    is com.eraassistant.mobile.productivity.CalendarSyncResult.Synced -> {
+                        reminderRepository.markCalendarSynced(id, synced.eventId)
+                        productivityStatus = "Reminder added to your Android Calendar."
+                    }
+                    com.eraassistant.mobile.productivity.CalendarSyncResult.PermissionRequired -> {
+                        pendingCalendarReminderId = id
+                        requestCalendarAccess()
+                    }
+                    com.eraassistant.mobile.productivity.CalendarSyncResult.NoWritableCalendar -> {
+                        productivityStatus = "No visible writable calendar was found on this device."
+                    }
+                    is com.eraassistant.mobile.productivity.CalendarSyncResult.Failed -> {
+                        productivityStatus = "Calendar sync failed: ${synced.reason}"
+                    }
+                }
+            }
+            result.onFailure { error ->
+                productivityStatus = "Calendar sync failed: ${error.message ?: "Unknown error"}"
+            }
+        }
+    }
+
+    private fun createManagedMemory(category: String, title: String, content: String) {
+        lifecycleScope.launch {
+            runCatching {
+                managedMemoryRepository.add(category, title, content)
+                productivityStatus = "Memory saved encrypted on this device."
+            }.onFailure { error ->
+                productivityStatus = "Memory was not saved: ${error.message ?: "Sensitive or invalid information"}"
+            }
+        }
+    }
+
+    private fun deleteManagedMemory(id: String) {
+        lifecycleScope.launch {
+            runCatching {
+                managedMemoryRepository.delete(id)
+                productivityStatus = "Memory entry deleted."
+            }.onFailure { error ->
+                productivityStatus = "Memory entry could not be deleted: ${error.message ?: "Unknown error"}"
+            }
+        }
+    }
+
+    private fun clearManagedMemory() {
+        lifecycleScope.launch {
+            runCatching {
+                val removed = managedMemoryRepository.clearAll()
+                productivityStatus = "Deleted $removed encrypted memory entr(y/ies)."
+            }.onFailure { error ->
+                productivityStatus = "Memory could not be cleared: ${error.message ?: "Unknown error"}"
+            }
+        }
     }
 
     private fun requestMicrophonePermissionSetup() {
@@ -1132,6 +1446,7 @@ class MainActivity : ComponentActivity() {
             "click" -> PhoneBrowserAgentPolicy.canClick(node)
             "fill", "type" -> PhoneBrowserAgentPolicy.canFill(node)
             "press" -> PhoneBrowserAgentPolicy.canPress(node)
+            "focus_and_show_keyboard" -> PhoneBrowserAgentPolicy.canFill(node)
             "check", "uncheck" -> PhoneBrowserAgentPolicy.canCheck(node)
             "select" -> PhoneBrowserAgentPolicy.canSelect(node)
             "scroll" -> node.visible
@@ -1147,6 +1462,30 @@ class MainActivity : ComponentActivity() {
             phoneBrowserAgent = phoneBrowserAgent.copy(
                 actionStatus = "This action needs a one-time confirmation. Review the permission prompt first."
             )
+            return
+        }
+        if (action.lowercase() == "focus_and_show_keyboard") {
+            lifecycleScope.launch {
+                phoneBrowserAgent = phoneBrowserAgent.copy(
+                    busy = true,
+                    actionStatus = "Focusing the selected field and requesting Android's system keyboard…"
+                )
+                runCatching {
+                    phoneBrowserAgentClient.focusAndShowSystemKeyboard(targetId, ref)
+                }
+                    .onSuccess { result ->
+                        phoneBrowserAgent = phoneBrowserAgent.copy(
+                            busy = false,
+                            actionStatus = result.message
+                        )
+                    }
+                    .onFailure { error ->
+                        phoneBrowserAgent = phoneBrowserAgent.copy(
+                            busy = false,
+                            actionStatus = error.message ?: "Android keyboard request failed."
+                        )
+                    }
+            }
             return
         }
         val includePrivateDetails = action.lowercase() == "read" && confirmed
@@ -1424,6 +1763,8 @@ class MainActivity : ComponentActivity() {
 
     private fun createCallConfirmation(contact: ContactCandidate) {
         voiceApprovalEngine.clear()
+        pendingUiConsequenceConfirmation = null
+        pendingUiActionStore.clearPending("A newer dialer request replaced the pending UI action.")
         val pending = CallConfirmationPolicy.create(
             name = contact.displayName,
             number = contact.phoneNumbers.firstOrNull(),
@@ -1519,6 +1860,80 @@ class MainActivity : ComponentActivity() {
                 recordCommand("Visual product search", "User-selected external visual-search handoff opened.")
             }
             .onFailure { status = "Could not open visual search chooser: " + (it.message ?: "Unknown error") }
+    }
+
+    private fun analyzeVisualScreen() {
+        val frame = VisualFrameStore.current()
+        if (!accessibilityConsentAccepted || frame == null) {
+            visualScreenAnalysisStatus = "Capture one fresh frame and keep screen-inspection consent enabled."
+            return
+        }
+        val configuration = aiProviderConfigurationStore.load()
+        val key = aiProviderConfigurationStore.apiKey()
+        if (configuration.provider == AIProviderKind.LOCAL_ONLY ||
+            !configuration.isRemoteConfigured(!key.isNullOrBlank()) || key.isNullOrBlank()
+        ) {
+            visualScreenAnalysisStatus = "Select a configured Gemini or OpenAI-compatible multimodal model first."
+            return
+        }
+        val copy = VisualFrameStore.copyCurrentBitmap()
+        if (copy == null) {
+            visualScreenAnalysisStatus = "The screenshot frame is no longer available. Capture it again."
+            return
+        }
+        lifecycleScope.launch {
+            visualScreenAnalysisRunning = true
+            visualScreenAnalysisStatus = "Analyzing the user-approved screenshot once…"
+            try {
+                val result = VisualScreenUnderstandingProvider.analyze(copy, configuration, key)
+                val currentFrame = VisualFrameStore.current()
+                if (currentFrame?.frameId != frame.frameId) {
+                    visualScreenAnalysis = null
+                    visualScreenAnalysisFrameId = null
+                    visualScreenAnalysisStatus = "The screen frame changed during analysis. Capture and analyze again."
+                } else {
+                    visualScreenAnalysis = result
+                    visualScreenAnalysisFrameId = frame.frameId
+                    visualScreenAnalysisStatus = if (result.controls.isEmpty()) {
+                        "No sufficiently clear non-sensitive controls were identified."
+                    } else {
+                        "Found " + result.controls.size + " visible candidates. Review each target; confidence below 90% cannot be tapped."
+                    }
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                visualScreenAnalysisStatus = error.message ?: "Screen understanding failed."
+            } finally {
+                runCatching { copy.recycle() }
+                visualScreenAnalysisRunning = false
+            }
+        }
+    }
+
+    private fun dispatchVisualTarget(candidate: VisualControlCandidate) {
+        val frame = VisualFrameStore.current()
+        if (!accessibilityConsentAccepted || frame == null || frame.frameId != visualScreenAnalysisFrameId) {
+            visualScreenAnalysisStatus = "The analyzed screenshot is no longer current. Capture and analyze again."
+            return
+        }
+        val display = windowManager.defaultDisplay
+        val metrics = DisplayMetrics()
+        @Suppress("DEPRECATION")
+        display.getRealMetrics(metrics)
+        val proposal = VisualTargetProposal(
+            frameId = frame.frameId,
+            sourcePackage = frame.sourcePackage ?: return,
+            capturedAtEpochMs = frame.capturedAtEpochMs,
+            displayWidth = metrics.widthPixels,
+            displayHeight = metrics.heightPixels,
+            displayRotation = display.rotation,
+            label = candidate.label,
+            role = candidate.role,
+            region = candidate.region,
+            confidence = candidate.confidence
+        )
+        visualScreenAnalysisStatus = EraAccessibilityService.dispatchGroundedVisualTap(proposal)
     }
 
     private fun identifyVisualProduct() {
@@ -1682,6 +2097,11 @@ class MainActivity : ComponentActivity() {
             )
             else -> null
         }
+        if (action == "approve" && result is TransitionResult.Updated) {
+            refreshTaskMonitor(coordinator)
+            dispatchApprovedPlanStep(coordinator, stepId)
+            return
+        }
         when (result) {
             is TransitionResult.Updated -> status = if (action == "approve") {
                 "Task step $stepId marked approved for plan review only. No adapter action was dispatched; a typed action request and exact fresh-observation approval are still required."
@@ -1692,6 +2112,54 @@ class MainActivity : ComponentActivity() {
             null -> status = "Unknown task monitor action."
         }
         refreshTaskMonitor(coordinator)
+    }
+
+    private fun dispatchApprovedPlanStep(coordinator: TaskExecutionCoordinator, stepId: String) {
+        val step = coordinator.plan.steps.firstOrNull { it.id.toString() == stepId }
+        if (step == null) {
+            status = "Approved plan step was not found. No action was dispatched."
+            refreshTaskMonitor(coordinator)
+            return
+        }
+        val compiled = PlanStepActionCompiler.compile(coordinator.plan, step)
+        if (compiled == null) {
+            status = "Step approved for manual review only. No trusted typed action mapping exists for this step; unsupported planner prose is never executed."
+            refreshTaskMonitor(coordinator)
+            return
+        }
+        lifecycleScope.launch {
+            status = "Dispatching locally compiled action for reviewed step $stepId…"
+            val result = try {
+                coordinator.executeStep(stepId, compiled.request)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                com.eraassistant.mobile.capability.StructuredActionResult.failure(
+                    compiled.request.actionId,
+                    com.eraassistant.mobile.capability.ExecutionError(
+                        com.eraassistant.mobile.capability.ExecutionErrorCategory.ADAPTER_EXECUTION_FAILURE,
+                        error.message ?: "Plan step execution failed."
+                    )
+                )
+            }
+            refreshTaskMonitor(coordinator)
+            val state = coordinator.ledger.get(stepId)?.state
+            status = when (state) {
+                com.eraassistant.mobile.tasks.TaskStepState.MACHINE_VERIFIED ->
+                    "Step $stepId executed and independently verified."
+                com.eraassistant.mobile.tasks.TaskStepState.WAITING_USER ->
+                    "Step $stepId was dispatched, but Android did not expose reliable independent outcome evidence. Inspect the target app and confirm manually."
+                com.eraassistant.mobile.tasks.TaskStepState.RECOVERY_REQUIRED ->
+                    "Step $stepId has an uncertain external outcome. Inspect the target app before any retry."
+                com.eraassistant.mobile.tasks.TaskStepState.FAILED,
+                com.eraassistant.mobile.tasks.TaskStepState.NEEDS_REPLAN ->
+                    "Step $stepId failed: ${result.error?.message ?: result.outputData["message"] ?: result.status.name}"
+                else ->
+                    "Step $stepId result: ${result.status}. Ledger state: ${state ?: "unknown"}."
+            }
+            recordCommand("Approved plan step $stepId", status)
+            if (speechOutputEnabled) voiceOutput.speak(status)
+        }
     }
 
     private fun verifyTaskStep(stepId: String, evidence: String) {
@@ -1747,6 +2215,9 @@ class MainActivity : ComponentActivity() {
         if (!accessibilityConsentAccepted) {
             VisualFrameStore.clear()
             visualFrame = null
+            visualScreenAnalysis = null
+            visualScreenAnalysisFrameId = null
+            visualScreenAnalysisStatus = ""
             visualCaptureStatus = ""
             uiSnapshot = ""
             uiSnapshotError = "Accept the screen-inspection disclosure before reading screen content."
@@ -1795,6 +2266,9 @@ class MainActivity : ComponentActivity() {
     private fun clearVisualFrame() {
         VisualFrameStore.clear()
         visualFrame = null
+        visualScreenAnalysis = null
+        visualScreenAnalysisFrameId = null
+        visualScreenAnalysisStatus = "Visual analysis cleared with the screenshot."
         getSharedPreferences("era_ui_snapshot", MODE_PRIVATE).edit()
             .remove("visual_capture_status")
             .apply()
@@ -2006,57 +2480,94 @@ class MainActivity : ComponentActivity() {
     private fun handleVoiceApprovalCommand(text: String): Boolean {
         val prompt = voiceApprovalEngine.activePrompt()
         if (prompt == null) {
+            if (pendingUiConsequenceConfirmation != null) {
+                pendingUiConsequenceConfirmation = null
+                pendingUiActionStore.clearPending("Final voice approval expired. Capture the current screen and review again.")
+                status = "Final approval expired. No consequential action was performed."
+                recordCommand("Expired consequential approval", status)
+                return true
+            }
             if (VoiceApprovalEngine.isApprovalOrCancellationPhrase(text)) {
-                status = "কোনো action voice approval-এর জন্য অপেক্ষা করছে না। কিছু execute করা হয়নি।"
+                status = "কোনো কাজ voice approval-এর জন্য অপেক্ষা করছে না। কিছু execute করা হয়নি।"
                 recordCommand(text, status)
                 return true
             }
             return false
         }
 
-        val pending = pendingCallConfirmation
-        val binding = pending?.let(::callApprovalBinding)
+        val callPending = pendingCallConfirmation
+        val uiPending = pendingUiConsequenceConfirmation
+        val binding = when {
+            callPending != null -> callApprovalBinding(callPending)
+            uiPending != null -> uiPending.binding
+            else -> null
+        }
         return when (val decision = voiceApprovalEngine.consumeSpokenCommand(text, binding)) {
             is VoiceApprovalResult.Approved -> {
-                val confirmed = pendingCallConfirmation
-                if (confirmed == null || !CallConfirmationPolicy.canConfirm(confirmed, System.currentTimeMillis())) {
-                    pendingCallConfirmation = null
-                    status = "Voice approval পাওয়া গেছে, কিন্তু call request আর valid নেই। কোনো dialer খোলা হয়নি।"
-                    recordCommand("Expired voice approval", status)
-                } else {
-                    pendingCallConfirmation = null
-                    val commandLabel = "Voice approval: open dialer for ${confirmed.contactName}"
-                    lifecycleScope.launch {
-                        status = executeCommandViaCoordinator(
-                            commandLabel,
-                            AssistantCommand.DialNumber(confirmed.dialNumber)
-                        ) + " Voice approval received; ERA did not place the call."
-                        recordCommand(commandLabel, status)
+                when {
+                    callPending != null && CallConfirmationPolicy.canConfirm(callPending, System.currentTimeMillis()) -> {
+                        pendingCallConfirmation = null
+                        val commandLabel = "Voice approval: open dialer for ${callPending.contactName}"
+                        lifecycleScope.launch {
+                            status = executeCommandViaCoordinator(
+                                commandLabel,
+                                AssistantCommand.DialNumber(callPending.dialNumber)
+                            ) + " Voice approval received; ERA did not place the call."
+                            recordCommand(commandLabel, status)
+                        }
+                    }
+                    uiPending != null && pendingUiActionStore.confirmConsequenceApproval(uiPending.binding) -> {
+                        pendingUiConsequenceConfirmation = null
+                        status = "OK received. Returning to the target app and rechecking the exact screen. The action runs only if that screen still matches."
+                        uiActionStatus = status
+                        history = historyStore.add("Final voice approval received", uiPending.summary)
+                        if (speechOutputEnabled) voiceOutput.speak("OK received. Returning to the target app now.")
+                        // The target app was behind ERA while the user reviewed the summary.
+                        // Put ERA behind it so Accessibility can re-observe the original live screen.
+                        lifecycleScope.launch {
+                            delay(450L)
+                            moveTaskToBack(true)
+                        }
+                    }
+                    else -> {
+                        pendingCallConfirmation = null
+                        pendingUiConsequenceConfirmation = null
+                        pendingUiActionStore.clearPending("Final approval expired or no longer matches the exact action. Nothing was run.")
+                        status = "Voice approval আর valid নেই। কোনো action execute করা হয়নি।"
+                        recordCommand("Expired voice approval", status)
                     }
                 }
                 true
             }
             is VoiceApprovalResult.Denied -> {
                 pendingCallConfirmation = null
-                status = "Voice approval বাতিল হয়েছে। Dialer খোলা হয়নি।"
+                pendingUiConsequenceConfirmation = null
+                pendingUiActionStore.clearPending("Final action approval cancelled by the user.")
+                status = "Voice approval বাতিল হয়েছে। কোনো Submit/Pay/Delete/Publish action করা হয়নি।"
                 recordCommand("Voice approval denied: ${decision.requestId}", status)
                 true
             }
             is VoiceApprovalResult.Expired -> {
                 pendingCallConfirmation = null
-                status = "Voice approval-এর সময় শেষ। নতুন করে request তৈরি করো।"
+                pendingUiConsequenceConfirmation = null
+                pendingUiActionStore.clearPending("Final voice approval expired. Review and approve again.")
+                status = "Voice approval-এর সময় শেষ। নতুন করে screen review করতে হবে।"
                 recordCommand("Voice approval expired: ${decision.requestId}", status)
                 true
             }
             is VoiceApprovalResult.BindingChanged -> {
                 pendingCallConfirmation = null
-                status = "Approved action-এর target বদলে গেছে। নিরাপত্তার জন্য action বাতিল করা হয়েছে।"
+                pendingUiConsequenceConfirmation = null
+                pendingUiActionStore.clearPending("The target screen or action changed. Final approval was revoked.")
+                status = "Target screen বদলে গেছে। নিরাপত্তার জন্য action বাতিল হয়েছে।"
                 recordCommand("Voice approval binding changed: ${decision.requestId}", status)
                 true
             }
             is VoiceApprovalResult.Unrecognized -> {
                 pendingCallConfirmation = null
-                status = "অন্য command শোনা হয়েছে; আগের voice approval বাতিল। নতুন command process করা হচ্ছে।"
+                pendingUiConsequenceConfirmation = null
+                pendingUiActionStore.clearPending("Voice reply did not match OK or Cancel. The pending action was cancelled.")
+                status = "অন্য command শোনা হয়েছে; আগের consequential action বাতিল। নতুন command process করা হচ্ছে।"
                 history = historyStore.add("Pending voice approval cancelled", status)
                 false
             }
@@ -2080,38 +2591,60 @@ class MainActivity : ComponentActivity() {
     private fun runSequence(commands: List<AssistantCommand>, original: String) {
         sequenceJob?.cancel()
         sequenceJob = lifecycleScope.launch {
+            activeTaskCoordinator = null
+            val outcomes = mutableListOf<SequenceStepOutcome>()
             status = "Command sequence শুরু হচ্ছে (${commands.size} steps)…"
             for ((index, command) in commands.withIndex()) {
                 if (!isActive) break
-                status = "Step ${index + 1}/${commands.size}: ${command::class.simpleName}"
-                val result = runCatching { executeCommandViaCoordinator(original, command) }
-                    .getOrElse { "কাজটি ব্যর্থ হয়েছে: ${it.message ?: "Unknown error"}" }
-                status = result
-                recordCommand("${index + 1}. ${command::class.simpleName}", result)
-                if (isExecutionFailure(result)) {
-                    status = "Sequence stopped at step ${index + 1}: $result"
+                val label = command::class.simpleName ?: "Command"
+                status = "Step ${index + 1}/${commands.size}: $label"
+                activeTaskCoordinator = null
+                val message = try {
+                    executeCommandViaCoordinator(original, command)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Exception) {
+                    "কাজটি ব্যর্থ হয়েছে: ${error.message ?: "Unknown error"}"
+                }
+                val record = activeTaskCoordinator?.ledger?.all()?.singleOrNull()
+                val disposition = when (record?.state) {
+                    com.eraassistant.mobile.tasks.TaskStepState.MACHINE_VERIFIED ->
+                        SequenceStepDisposition.MACHINE_VERIFIED
+                    com.eraassistant.mobile.tasks.TaskStepState.WAITING_USER,
+                    com.eraassistant.mobile.tasks.TaskStepState.USER_REPORTED,
+                    com.eraassistant.mobile.tasks.TaskStepState.USER_CONFIRMED ->
+                        SequenceStepDisposition.EXECUTED_UNVERIFIED
+                    com.eraassistant.mobile.tasks.TaskStepState.FAILED,
+                    com.eraassistant.mobile.tasks.TaskStepState.REJECTED,
+                    com.eraassistant.mobile.tasks.TaskStepState.NEEDS_REPLAN ->
+                        SequenceStepDisposition.FAILED
+                    com.eraassistant.mobile.tasks.TaskStepState.RECOVERY_REQUIRED ->
+                        SequenceStepDisposition.RECOVERY_REQUIRED
+                    com.eraassistant.mobile.tasks.TaskStepState.CANCELLED ->
+                        SequenceStepDisposition.CANCELLED
+                    else -> when (command) {
+                        AssistantCommand.ReadBattery, AssistantCommand.ReadDateTime, AssistantCommand.Help ->
+                            SequenceStepDisposition.EXECUTED_UNVERIFIED
+                        else -> SequenceStepDisposition.NOT_DISPATCHED
+                    }
+                }
+                val outcome = SequenceStepOutcome(index + 1, commands.size, label, disposition, message)
+                outcomes += outcome
+                status = "Step ${index + 1}/${commands.size}: ${disposition.name} — $message"
+                recordCommand("$index. $label", status)
+                if (!outcome.mayContinue) {
+                    status = SequenceProgress(outcomes).summary + " Stopped at step ${index + 1}: $message"
                     recordCommand(original, status)
+                    if (speechOutputEnabled) voiceOutput.speak(status)
                     return@launch
                 }
                 delay(350)
             }
-            if (isActive) {
-                status = "Command sequence সম্পন্ন হয়েছে।"
-                recordCommand(original, status)
-                if (speechOutputEnabled) voiceOutput.speak(status)
-            } else {
-                status = "Command sequence বাতিল করা হয়েছে।"
-            }
+            val summary = SequenceProgress(outcomes, cancelled = !isActive).summary
+            status = summary
+            recordCommand(original, status)
+            if (speechOutputEnabled && isActive) voiceOutput.speak(status)
         }
-    }
-
-    private fun isExecutionFailure(message: String): Boolean {
-        val value = message.lowercase()
-        return listOf(
-            "পাওয়া যায়নি", "পাওয়া যায়নি", "খোলা যায়নি", "খোলা যায়নি", "করা যায়নি", "করা যায়নি",
-            "ব্যর্থ", "ইনস্টল করা নেই", "একাধিক app", "not installed", "not found", "permission denied", "failed", "unknown error",
-            "no action was dispatched", "no action was executed", "verification is unavailable", "unsupported", "fail closed"
-        ).any(value::contains)
     }
 
     private fun approveUiAction(selectorText: String, action: String, payload: String, resourceId: String = "") {
@@ -2123,6 +2656,10 @@ class MainActivity : ComponentActivity() {
             uiActionStatus = "প্রথমে target app থেকে UI capture করো, তারপর action approve করো।"
             return
         }
+        voiceApprovalEngine.clear()
+        pendingCallConfirmation = null
+        pendingUiConsequenceConfirmation = null
+
         val reviewedSnapshot = runCatching { JSONObject(uiSnapshot) }.getOrNull()
         val expectedPackage = reviewedSnapshot?.optString("packageName")?.takeIf { it.isNotBlank() && it != "null" }
         val rootJson = runCatching { reviewedSnapshot?.getJSONObject("root")?.toString() }.getOrNull()
@@ -2148,18 +2685,82 @@ class MainActivity : ComponentActivity() {
             resourceId = resourceId,
             reviewedObservationId = observationId
         )
-        uiActionStatus = if (approved) {
-            "One-shot action approved for the exact screen state in ${expectedPackage ?: "target app"}. Switch back and tap ERA overlay within 2 minutes. Any screen change cancels approval."
-        } else "Action approve করা যায়নি। Exact target এবং প্রয়োজনীয় text দাও।"
+        if (!approved) {
+            uiActionStatus = "Action approve করা যায়নি। Sensitive field বা credential-like text হলে ERA সেটি প্রবেশ করাবে না।"
+            status = uiActionStatus
+            return
+        }
+
+        // Submit/Pay/Delete/Publish and similar controls need a separate spoken OK.
+        val pending = pendingUiActionStore.pending()
+        val snapshot = runCatching { UiTreeJson.decode(uiSnapshot) }.getOrNull()
+        val selector = SemanticUiSelector(
+            resourceId = resourceId.takeIf(String::isNotBlank),
+            text = selectorText.takeIf(String::isNotBlank),
+            clickable = if (action == PendingUiActionStore.ACTION_CLICK) true else null,
+            editable = if (action == PendingUiActionStore.ACTION_TYPE_TEXT) true else null,
+            enabled = true,
+            exactText = true
+        )
+        val target = if (pending != null && snapshot != null) {
+            (SemanticUiSelectorEngine.resolve(snapshot.root, selector) as? SelectorResolution.Unique)?.element
+        } else null
+        val consequentialKind = if (action == PendingUiActionStore.ACTION_CLICK && target != null) {
+            ConsequentialActionPolicy.classify(target)
+        } else null
+
+        if (consequentialKind != null && pending != null && snapshot != null && target != null) {
+            val summary = ConsequentialActionPolicy.buildSummary(consequentialKind, snapshot, target)
+            if (summary == null) {
+                pendingUiActionStore.clearPending(
+                    "ERA could not read a reliable amount from the current screen. Review the payment manually; nothing was submitted."
+                )
+                uiActionStatus = pendingUiActionStore.result()
+                status = uiActionStatus
+                return
+            }
+            val binding = pendingUiActionStore.consequenceBinding(pending)
+            if (!pendingUiActionStore.armConsequenceApproval(binding)) {
+                pendingUiActionStore.clearPending("Could not bind the final confirmation to this exact action. Nothing was run.")
+                uiActionStatus = pendingUiActionStore.result()
+                status = uiActionStatus
+                return
+            }
+            voiceApprovalEngine.request(
+                actionId = "ui.consequential.${consequentialKind.name.lowercase()}",
+                actionSummary = summary,
+                targetSummary = (target.text ?: target.contentDescription ?: consequentialKind.label).take(120),
+                binding = binding,
+                ttlMs = VoiceApprovalEngine.DEFAULT_TTL_MS
+            )
+            pendingUiConsequenceConfirmation = PendingUiConsequenceConfirmation(binding, summary)
+            uiActionStatus = "$summary. Say “OK” to proceed, or “Cancel” to stop. Approval expires in 30 seconds."
+            status = uiActionStatus
+            history = historyStore.add("Awaiting final action approval", summary)
+            if (speechOutputEnabled) voiceOutput.speak("$summary. Say OK to continue, or Cancel to stop.")
+            // Launch the Android speech recognizer for a one-time reply when no voice session is active.
+            if (!voiceSessionActive && microphonePermissionGranted) {
+                lifecycleScope.launch {
+                    delay(1_200L)
+                    if (pendingUiConsequenceConfirmation?.binding == binding && !voiceSessionActive) {
+                        startSpeechRecognition()
+                    }
+                }
+            }
+            return
+        }
+
+        uiActionStatus =
+            "One-shot action approved for the exact screen state in ${expectedPackage ?: "target app"}. Switch to the target app and tap ERA overlay within 2 minutes. Any screen change cancels approval."
         status = uiActionStatus
         if (speechOutputEnabled) voiceOutput.speak(
-            if (approved) "Action approved for this exact screen. Switch to the target app and tap the ERA overlay."
-            else "Action approval failed. No action is pending."
+            "Action approved for this exact screen. Switch to the target app and tap the ERA overlay."
         )
     }
 
     private fun recordCommand(command: String, result: String) {
         history = historyStore.add(command, result)
+        if (::persistentAgentMemory.isInitialized) refreshAgentMemoryRecords()
         if (speechOutputEnabled) voiceOutput.speak(result)
     }
 
@@ -2171,7 +2772,8 @@ class MainActivity : ComponentActivity() {
             return
         }
         lifecycleScope.launch {
-            val availableCapabilities = AndroidCapabilityDiscovery(this@MainActivity).discover()
+            val intentProfile = DomainIntentClassifier.classify(request)
+            val availableCapabilities = AndroidCapabilityDiscovery(this@MainActivity).discoverForGoal(request)
             val localPlanner = PreviewPlanner(availableCapabilities)
             val providerConfig = aiProviderConfigurationStore.load()
             val plannerEndpointReady = when (providerConfig.provider) {
@@ -2219,7 +2821,10 @@ class MainActivity : ComponentActivity() {
                 routedPlanner.plan(request, remoteEnabled = plannerEndpointReady)
             }
             val routed = routingResult.getOrNull()
-            val plan = routed?.value ?: offlineOperationManager.planWithFallback(request)
+            val workflowPlan = PersonalWorkflowCatalog.createPlan(request)
+            val proposedPlan = workflowPlan ?: routed?.value ?: offlineOperationManager.planWithFallback(request)
+            val policyResult = TwoPassPlanningEngine(localPlanner).enforcePlan(request, proposedPlan, intentProfile)
+            val plan = policyResult.plan
             routingResult.exceptionOrNull()?.let { if (it is CancellationException) throw it }
             val routingNote = routed?.note.orEmpty().ifBlank {
                 routingResult.exceptionOrNull()?.let {
@@ -2232,14 +2837,31 @@ class MainActivity : ComponentActivity() {
             val availabilityErrors = if (dag != null && dagErrors.isEmpty()) {
                 dag.validateCapabilityAvailability(capabilityRegistry)
             } else emptyList()
+            val toolRequests = plan.steps.flatMap { step ->
+                step.requiredCapabilities.map { capability ->
+                    ToolSelectionRequest(
+                        capability = capability,
+                        domains = intentProfile.domains,
+                        sensitivity = if (intentProfile.requiresPersonalContext) ToolDataSensitivity.PERSONAL else ToolDataSensitivity.PUBLIC,
+                        risk = step.risk,
+                        offlineRequired = !offlineOperationManager.isNetworkAvailable(),
+                        integrationContext = IntegrationRouteContext(
+                            androidApiLevel = Build.VERSION.SDK_INT,
+                            screenInspectionConsented = accessibilityConsentAccepted
+                        )
+                    )
+                }
+            }.distinctBy { it.capability to it.risk }
+            val toolSelections = AutonomyToolSelector(capabilityRegistry).selectAll(toolRequests)
             val matchedSkill = skillEngine.findSkillForGoal(request)
             val learnedWorkflow = workflowLearningEngine.findVerifiedWorkflow(request)
             val feedbackLoop = PlannerFeedbackLoop(localPlanner, capabilityRegistry, maxReplans = 3)
+            val executionPlan = PlanStepActionCompiler.enrichPlan(plan)
             val offlineDescriptors = offlineOperationManager.offlineCapableDescriptors()
             val displayPlan = if (routingNote.isBlank()) plan else plan.copy(note = "${plan.note}\n$routingNote")
             val taskCoordinator = runCatching {
                 TaskExecutionCoordinator.from(
-                    plan = plan,
+                    plan = executionPlan,
                     persistence = SharedPreferencesTaskLedgerPersistence(this@MainActivity),
                     capabilityRegistry = capabilityRegistry,
                     verificationEngine = verificationEngine,
@@ -2260,7 +2882,13 @@ class MainActivity : ComponentActivity() {
             planPreview = buildString {
                 appendLine("Goal: ${plan.goal}")
                 appendLine("Planner source: ${routed?.source ?: PlannerSource.LOCAL_FALLBACK}")
+                appendLine("Agent domain(s): ${intentProfile.domains.joinToString()} | Intent confidence: ${(intentProfile.confidence * 100).toInt()}% | Intent risk: ${intentProfile.risk}")
+                appendLine("Domain constraints: ${intentProfile.constraints.joinToString().ifBlank { "none" }}")
+                intentProfile.unresolvedInputs.forEach { appendLine("  NEEDS USER INPUT: $it") }
                 appendLine("Plan version: ${plan.planVersion} | Risk: ${plan.overallRisk} | Estimated actions: ${plan.estimatedActions}")
+                appendLine("Two-pass policy: ${if (policyResult.isValid) "PASS" else "BLOCKED"}")
+                policyResult.policyWarnings.forEach { appendLine("  POLICY: $it") }
+                if (policyResult.blockedStepIds.isNotEmpty()) appendLine("Explicitly blocked steps: ${policyResult.blockedStepIds.joinToString()}")
                 val validationErrors = plan.validate() + dagErrors + availabilityErrors
                 appendLine("Plan structural/DAG validation: ${if (plan.validate().isEmpty() && dag != null) "PASS" else "FAILED"}")
                 appendLine("Registered capability/action validation: ${if (dagErrors.isEmpty()) "PASS" else "BLOCKED"}")
@@ -2272,6 +2900,13 @@ class MainActivity : ComponentActivity() {
                 appendLine("Discovered task capabilities: ${availableCapabilities.joinToString().ifBlank { "none" }}")
                 appendLine("Offline-capable adapters: ${offlineDescriptors.joinToString { it.name }.ifBlank { "none" }}")
                 appendLine("Network status: ${if (offlineOperationManager.isNetworkAvailable()) "validated online" else "offline or unvalidated"}")
+                appendLine("Tool selection (exact registered action bindings):")
+                toolRequests.zip(toolSelections).forEach { (need, selection) ->
+                    val chosen = selection.selected
+                    appendLine("  ${need.capability}: ${selection.status}" +
+                        (chosen?.let { " — ${it.capabilityName}/${it.actionName} (score ${it.score})" } ?: ""))
+                    selection.reasons.forEach { appendLine("    $it") }
+                }
                 matchedSkill?.let { appendLine("Skill template match: ${it.name} — review/template only; never auto-executed.") }
                 learnedWorkflow?.let { appendLine("Previously verified workflow hint: ${it.workflowId} (${it.verifiedCount} verified run(s)); suggestion only, not replayed.") }
                 plan.steps.forEach { step ->
@@ -2318,6 +2953,7 @@ class MainActivity : ComponentActivity() {
         if (::foregroundVoiceSession.isInitialized) foregroundVoiceSession.stop()
         if (::voiceOutput.isInitialized) voiceOutput.release()
         if (::phoneBrowserAgentClient.isInitialized) phoneBrowserAgentClient.destroy()
+        if (::deviceController.isInitialized) deviceController.close()
         if (::shizukuBridgeManager.isInitialized) shizukuBridgeManager.close()
         super.onDestroy()
     }

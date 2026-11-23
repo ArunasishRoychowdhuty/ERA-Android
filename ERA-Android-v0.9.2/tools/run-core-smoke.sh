@@ -17,6 +17,7 @@ kotlinc \
   "$ROOT/app/src/main/java/com/eraassistant/mobile/screen/UiElement.kt" \
   "$ROOT/app/src/main/java/com/eraassistant/mobile/screen/UiSnapshotFingerprint.kt" \
   "$ROOT/app/src/main/java/com/eraassistant/mobile/screen/UiActionProposal.kt" \
+  "$ROOT/app/src/main/java/com/eraassistant/mobile/screen/SensitiveInputPolicy.kt" \
   "$ROOT/app/src/main/java/com/eraassistant/mobile/observation/NormalizedObservation.kt" \
   "$ROOT/app/src/main/java/com/eraassistant/mobile/capability/CapabilityContract.kt" \
   "$ROOT/app/src/main/java/com/eraassistant/mobile/capability/CapabilitySchemas.kt" \
@@ -30,6 +31,7 @@ kotlinc \
   "$ROOT/app/src/main/java/com/eraassistant/mobile/tasks/TaskExecutionLedger.kt" \
   "$ROOT/app/src/main/java/com/eraassistant/mobile/tasks/TaskLedgerPersistence.kt" \
   "$ROOT/app/src/main/java/com/eraassistant/mobile/tasks/ActionApprovalStore.kt" \
+  "$ROOT/app/src/main/java/com/eraassistant/mobile/execution/AutonomyExecutionPolicy.kt" \
   "$ROOT/app/src/main/java/com/eraassistant/mobile/tasks/TaskExecutionCoordinator.kt" \
   "$ROOT/tools/CoreSmoke.kt" \
   -include-runtime -d "$OUT"

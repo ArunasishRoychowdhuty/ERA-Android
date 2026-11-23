@@ -47,6 +47,8 @@ data class ActionVerificationReport(
  */
 interface VerificationRule {
     val name: String
+    /** Rules opt in to their own criterion namespace; unknown criteria fail closed as unavailable. */
+    fun supports(criterion: String): Boolean = false
     fun evaluate(
         expectedCriteria: List<String>,
         preObservation: NormalizedObservation?,
@@ -235,6 +237,20 @@ class VerificationEngine(
         postObs: NormalizedObservation?,
         actionResult: StructuredActionResult
     ): VerificationEvidence {
+
+        // Structured device criteria must be handled by a matching rule. Do not let
+        // generic text matching turn missing system evidence into a false retry/failure.
+        if (criterion.startsWith("era.device.")) {
+            val rule = customRules.firstOrNull { it.supports(criterion) }
+            return rule?.evaluate(listOf(criterion), preObs, postObs, actionResult)
+                ?: VerificationEvidence(
+                    ruleName = "MissingDeviceVerificationRule",
+                    status = VerificationStatus.VERIFICATION_UNAVAILABLE,
+                    expectedOutcome = criterion,
+                    actualObservation = "No device-state verifier is registered for this action.",
+                    rationale = "A successful adapter response is not independent evidence of a device state."
+                )
+        }
 
         // 1. Check if custom rules handle this
         for (rule in customRules) {

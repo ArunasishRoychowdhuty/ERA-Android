@@ -139,7 +139,7 @@ object ActionIntentCompiler {
             title = spec.summary.take(120),
             description = spec.summary.take(500),
             requiredCapabilities = setOf(spec.taskCapability),
-            acceptanceCriteria = emptyList(),
+            acceptanceCriteria = acceptanceCriteria(spec),
             retryLimit = 0,
             risk = spec.taskRisk,
             reversible = true,
@@ -149,7 +149,7 @@ object ActionIntentCompiler {
             goal = spec.summary,
             steps = listOf(step),
             note = "Direct user command compiled by ERA's local allow-list. Adapter output is not independent outcome verification.",
-            acceptanceCriteria = emptyList(),
+            acceptanceCriteria = listOf("Every direct action must satisfy its action-specific acceptance criteria."),
             overallRisk = spec.taskRisk,
             estimatedActions = 1,
             planVersion = "era.direct.v1.$actionId"
@@ -168,6 +168,22 @@ object ActionIntentCompiler {
             createdAtEpochMs = createdAtEpochMs
         )
         return CompiledAction(plan, step.id.toString(), request, spec.summary)
+    }
+
+    private fun acceptanceCriteria(spec: Spec): List<String> = when (spec.actionName) {
+        "device.torch.set" -> listOf(
+            "era.device.torch.enabled=${spec.parameters["enabled"]}"
+        )
+        "device.volume.set_percent" -> listOf(
+            "era.device.volume.percent|stream=${spec.parameters["stream"]}|percent=${spec.parameters["percent"]}"
+        )
+        "device.volume.adjust" -> listOf(
+            "era.device.volume.adjust|stream=${spec.parameters["stream"]}|direction=${spec.parameters["direction"]}"
+        )
+        "device.app.launch" -> listOf(
+            "era.device.app.launch|name=${spec.parameters["appName"]}"
+        )
+        else -> listOf("era.device.intent|action=${spec.actionName}")
     }
 
     private fun volumeSpec(direction: String) = Spec(

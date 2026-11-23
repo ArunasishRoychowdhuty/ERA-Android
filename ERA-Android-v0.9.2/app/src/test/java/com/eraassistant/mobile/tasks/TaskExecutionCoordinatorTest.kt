@@ -210,6 +210,8 @@ class TaskExecutionCoordinatorTest {
         assertEquals(ActionResultStatus.FAILURE, rejected.status)
         assertEquals(ExecutionErrorCategory.CONSEQUENTIAL_APPROVAL_REQUIRED, rejected.error?.category)
         assertEquals(0, adapter.calls)
+        assertTrue("Invalid approval must be rejected before durable journal claim.",
+            coordinator.executionJournal?.allEntries().orEmpty().isEmpty())
 
         val freshRequest = highRiskRequest.copy(actionId = "action-2", idempotencyKey = "key-2")
         val freshApproved = coordinator.bindExplicitUserApproval("1", freshRequest, observation)
@@ -217,6 +219,33 @@ class TaskExecutionCoordinatorTest {
         val success = coordinator.executeStep("1", freshApproved!!, observation)
         assertEquals(ActionResultStatus.SUCCESS, success.status)
         assertEquals(1, adapter.calls)
+    }
+
+    @Test
+    fun criticalRiskActionIsHandedBackToUserWithoutAdapterDispatch() = runBlocking {
+        val adapter = FakeAdapter(descriptor()) { req ->
+            StructuredActionResult.success(req.actionId, observation = verifiedObservation())
+        }
+        val coordinator = approvedCoordinator(
+            plan(risk = TaskRisk.CRITICAL, requiresUserApproval = true),
+            adapter
+        )
+        val observation = verifiedObservation()
+        val criticalRequest = request().copy(
+            parameters = mapOf("operation" to "critical"),
+            targetObservationId = observation.observationId,
+            requiresUserApproval = true,
+            riskLevel = ActionRiskLevel.CRITICAL
+        )
+        val approved = coordinator.bindExplicitUserApproval("1", criticalRequest, observation)
+        assertNotNull(approved)
+
+        val result = coordinator.executeStep("1", approved!!, observation)
+
+        assertEquals(ActionResultStatus.WAITING_USER, result.status)
+        assertEquals(0, adapter.calls)
+        assertEquals(TaskStepState.WAITING_USER, coordinator.ledger.get("1")?.state)
+        assertTrue(coordinator.executionJournal?.allEntries().orEmpty().isEmpty())
     }
 
     @Test

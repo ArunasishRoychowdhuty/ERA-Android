@@ -23,7 +23,11 @@ class ActionApprovalStoreTest {
         val req = request()
         val token = store.issue("step-4", req, "obs-fresh")
 
+        // The pre-dispatch gate may inspect the binding, but only durable dispatch consumes it.
+        assertTrue(store.matches(token, "step-4", req, "obs-fresh"))
+        assertTrue(store.matches(token, "step-4", req, "obs-fresh"))
         assertTrue(store.consume(token, "step-4", req, "obs-fresh"))
+        assertFalse(store.matches(token, "step-4", req, "obs-fresh"))
         assertFalse(store.consume(token, "step-4", req, "obs-fresh"))
 
         val changedRequestToken = store.issue("step-4", req, "obs-fresh")

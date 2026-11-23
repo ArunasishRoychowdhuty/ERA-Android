@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import com.eraassistant.mobile.statemachine.ActionExecutionProgress
 import com.eraassistant.mobile.statemachine.ExecutionState
+import com.eraassistant.mobile.productivity.SecurePayloadCipher
 import com.eraassistant.mobile.statemachine.TaskStateMachine
 import org.json.JSONArray
 import org.json.JSONObject
@@ -19,7 +20,11 @@ enum class MemoryCategory {
     VERIFIED_WORKFLOWS,
     MISTAKE_CORRECTIONS,
     CAPABILITY_KNOWLEDGE,
-    AGENT_CONFIG
+    AGENT_CONFIG,
+    USER_PROFILE,
+    HOME_MANAGEMENT,
+    HOUSEHOLD_ROUTINES,
+    PEOPLE_CONTEXT
 }
 
 /**
@@ -58,6 +63,7 @@ class PersistentAgentMemory(
     private val prefsName: String = "era_agent_memory"
 ) {
     private val prefs: SharedPreferences? = context?.getSharedPreferences(prefsName, Context.MODE_PRIVATE)
+    private val secureCipher: SecurePayloadCipher? = context?.let { SecurePayloadCipher() }
     private val memory = ConcurrentHashMap<String, MemoryRecord>()
 
     init {
@@ -156,8 +162,12 @@ class PersistentAgentMemory(
             .joinToString("") { "%02x".format(it) }
 
     private fun loadFromStorage() {
-        val raw = prefs?.getString(KEY_STORE, null) ?: return
-        var sanitizedExistingData = false
+        val stored = prefs?.getString(KEY_STORE, null) ?: return
+        val encryptedAtRest = stored.startsWith(ENCRYPTED_PREFIX)
+        val raw = if (encryptedAtRest) {
+            runCatching { secureCipher?.decrypt(stored.removePrefix(ENCRYPTED_PREFIX)) }.getOrNull() ?: return
+        } else stored
+        var sanitizedExistingData = !encryptedAtRest
         runCatching {
             val array = JSONArray(raw)
             for (i in 0 until array.length()) {
@@ -204,11 +214,14 @@ class PersistentAgentMemory(
                 put("userApproved", r.userApproved)
             })
         }
-        prefs.edit().putString(KEY_STORE, array.toString()).commit()
+        // Never fall back to plaintext when the Keystore cipher is unavailable.
+        val encrypted = runCatching { secureCipher?.encrypt(array.toString()) }.getOrNull() ?: return
+        prefs.edit().putString(KEY_STORE, ENCRYPTED_PREFIX + encrypted).commit()
     }
 
     companion object {
         private const val KEY_STORE = "records_v1"
+        private const val ENCRYPTED_PREFIX = "enc:"
         const val MAX_RECORDS_PER_CATEGORY = 100
         private const val MAX_KEY_LENGTH = 120
         private const val MAX_VALUE_LENGTH = 4_000
@@ -270,8 +283,8 @@ class WorkflowLearningEngine(
             put("goalPattern", workflow.goalPattern)
             put("actionNames", JSONArray(workflow.actionNames))
             put("verifiedCount", workflow.verifiedCount)
-            // Store seconds: the general numeric-card filter must not mistake a 13-digit epoch millisecond value for a payment card.
-            put("lastVerifiedAtEpochMs", workflow.lastVerifiedAtEpochMs / 1_000L)
+            put("schemaVersion", WorkflowTimestampCodec.CURRENT_SCHEMA_VERSION)
+            put("lastVerifiedAtEpochMs", WorkflowTimestampCodec.encodeEpochMs(workflow.lastVerifiedAtEpochMs))
         }.toString()
 
         memory.put(MemoryCategory.VERIFIED_WORKFLOWS, key, json)
@@ -296,7 +309,10 @@ class WorkflowLearningEngine(
                     goalPattern = obj.getString("goalPattern"),
                     actionNames = actions,
                     verifiedCount = obj.getInt("verifiedCount"),
-                    lastVerifiedAtEpochMs = obj.getLong("lastVerifiedAtEpochMs") * 1_000L * 1_000L
+                    lastVerifiedAtEpochMs = WorkflowTimestampCodec.decodeEpochMs(
+                        obj.getLong("lastVerifiedAtEpochMs"),
+                        obj.optInt("schemaVersion", 1)
+                    )
                 )
             }
         }

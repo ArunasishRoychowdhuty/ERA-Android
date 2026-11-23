@@ -9,6 +9,8 @@ import android.os.SystemClock
 import android.view.KeyEvent
 import android.view.View
 import android.view.autofill.AutofillManager
+import com.eraassistant.mobile.input.NativeImeController
+import com.eraassistant.mobile.input.NativeImeResult
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
@@ -92,6 +94,45 @@ class PhoneBrowserAgentClient(
         manager.requestAutofill(view)
         "Android Autofill request sent to the selected ERA browser tab. Choose a credential in the system UI; ERA does not receive its value."
     }
+
+    /**
+     * Focuses one fresh, ordinary editable DOM field and asks Android to display the
+     * currently selected system keyboard. ERA never receives keystrokes entered by the user.
+     */
+    suspend fun focusAndShowSystemKeyboard(targetId: String, ref: String): NativeImeResult =
+        withContext(Dispatchers.Main) {
+            checkAlive()
+            val tab = requireTab(targetId)
+            val snapshot = latestSnapshots[targetId]
+                ?: throw IllegalStateException("Capture a fresh semantic snapshot first.")
+            require(snapshot.targetId == targetId && snapshot.nodes.any { it.ref == ref }) {
+                "The semantic ref is not in the latest ERA browser snapshot."
+            }
+            val node = snapshot.nodes.first { it.ref == ref }
+            val rejection = PhoneBrowserAgentPolicy.textEntryRejection(node, "")
+            if (rejection != null) throw SecurityException(rejection)
+            require(PhoneBrowserAgentPolicy.canFill(node)) {
+                "The selected target is not a visible, ordinary editable field."
+            }
+
+            val focusResult = evaluateJson(
+                tab.webView,
+                actionScript(
+                    targetId = targetId,
+                    snapshotId = snapshot.snapshotId,
+                    ref = ref,
+                    action = "focus",
+                    text = "",
+                    confirmed = false,
+                    includePrivateDetails = false
+                )
+            )
+            require(focusResult.optString("status") == "FOCUS_READY") {
+                "The webpage did not confirm focus on the selected field."
+            }
+            tab.webView.requestFocus()
+            NativeImeController(tab.webView.context).showFor(tab.webView)
+        }
 
     fun newTab(input: String = ""): String {
         checkMainThread()
@@ -241,6 +282,10 @@ class PhoneBrowserAgentClient(
             "The semantic ref is not in the latest ERA browser snapshot."
         }
         val node = snapshot.nodes.first { it.ref == ref }
+        if (normalized in setOf("fill", "type")) {
+            val rejection = PhoneBrowserAgentPolicy.textEntryRejection(node, text)
+            if (rejection != null) throw SecurityException(rejection)
+        }
         val permitted = when (normalized) {
             "read" -> PhoneBrowserAgentPolicy.canRead(node)
             "click" -> PhoneBrowserAgentPolicy.canClick(node)
@@ -830,11 +875,23 @@ class PhoneBrowserAgentClient(
             /send|publish|submit|delete|remove|purchase|checkout|place order|buy now|pay|payment|transfer|withdraw|sign in|log in|apply|confirm|authorize|subscribe|unsubscribe|cancel|পাঠাও|পাঠান|প্রকাশ|জমা|মুছ|পেমেন্ট|কেনা|অর্ডার/i.test(current.nameText);
           const privateRead = action === 'read' && (sensitive || el.isContentEditable ||
             ['input','textarea','select'].includes(el.localName) || includePrivate);
+          if (['fill','type','focus'].includes(action) && sensitive) {
+            throw new Error('BLOCKED_SENSITIVE_FIELD: ERA cannot enter or focus credential, verification or payment fields. Use the website sign-in flow or Android Autofill.');
+          }
           if (((action === 'click' || action === 'check' || action === 'uncheck' || action === 'select') && consequential ||
-              ['fill','type'].includes(action) && sensitive || action === 'press' || privateRead || includePrivate) && !confirmed) {
+              action === 'press' || privateRead || includePrivate) && !confirmed) {
             throw new Error('This browser action requires one-time confirmation.');
           }
           if (action !== 'read' && action !== 'scroll' && disabled) throw new Error('Element is disabled.');
+          if (action === 'focus') {
+            const editable = el.isContentEditable || ['input','textarea'].includes(el.localName) ||
+              ['textbox','searchbox','spinbutton','combobox'].includes(current.role);
+            if (!editable) throw new Error('Selected element is not an editable field.');
+            if (readOnly || sensitive) throw new Error('Sensitive or read-only fields cannot be focused by ERA.');
+            el.focus();
+            if (doc.activeElement !== el) throw new Error('The webpage did not focus the selected field.');
+            return JSON.stringify({ status: 'FOCUS_READY', note: 'The selected ordinary field is focused. Android system IME may now be requested.' });
+          }
           if (action === 'read') {
             const output = {
               status: 'READ_OK',

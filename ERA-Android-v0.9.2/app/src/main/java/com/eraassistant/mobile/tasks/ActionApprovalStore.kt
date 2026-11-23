@@ -45,6 +45,22 @@ class ActionApprovalStore(
         return token
     }
 
+    /** Checks exact receipt binding without consuming it; final dispatch still calls [consume]. */
+    fun matches(
+        receiptId: String?,
+        stepId: String,
+        request: StructuredActionRequest,
+        observationId: String?
+    ): Boolean {
+        if (receiptId.isNullOrBlank() || observationId.isNullOrBlank()) return false
+        val binding = receipts[receiptId] ?: return false
+        val age = clock() - binding.approvedAtEpochMs
+        return binding.stepId == stepId &&
+            binding.observationId == observationId &&
+            age in 0..maxAgeMs &&
+            binding.fingerprint == fingerprint(stepId, request, observationId)
+    }
+
     /** Atomically consumes the receipt. It cannot be replayed or transferred to another action. */
     fun consume(
         receiptId: String?,

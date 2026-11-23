@@ -70,6 +70,78 @@ class UiSelectorTest {
         assertTrue(result is UiActionValidation.Rejected)
     }
 
+    @Test fun textEntryBlocksOtpPaymentAndApiTokenFields() {
+        val cases = listOf(
+            "Enter OTP",
+            "Payment card number",
+            "Bank account",
+            "API key",
+            "পিন লিখুন",
+            "ওটিপি দিন"
+        )
+        cases.forEach { label ->
+            val field = fixture().children.first().copy(
+                text = null,
+                contentDescription = null,
+                hintText = label,
+                resourceId = "com.example:id/input",
+                role = "input",
+                editable = true,
+                clickable = false,
+                actions = listOf("set_text", "focus")
+            )
+            val root = fixture().copy(children = listOf(field))
+            val result = UiActionProposalValidator.validate(
+                root,
+                UiActionProposal(
+                    SemanticUiSelector(resourceId = "com.example:id/input"),
+                    SemanticUiAction.TYPE_TEXT,
+                    text = "sample value",
+                    rationale = "Fill field"
+                )
+            )
+            assertTrue("Sensitive field should be rejected: $label", result is UiActionValidation.Rejected)
+        }
+    }
+
+    @Test fun textEntryBlocksCredentialLikePayloadEvenForGenericField() {
+        val field = fixture().children.first().copy(
+            text = null, contentDescription = null, hintText = "Text",
+            role = "input", editable = true, clickable = false,
+            actions = listOf("set_text", "focus")
+        )
+        val root = fixture().copy(children = listOf(field))
+        val result = UiActionProposalValidator.validate(
+            root,
+            UiActionProposal(
+                SemanticUiSelector(resourceId = field.resourceId),
+                SemanticUiAction.TYPE_TEXT,
+                text = "Bearer: abcdefghijklmnop",
+                rationale = "Fill field"
+            )
+        )
+        assertTrue(result is UiActionValidation.Rejected)
+    }
+
+    @Test fun safeTextEntryRemainsReviewable() {
+        val field = fixture().children.first().copy(
+            text = null, contentDescription = null, hintText = "Display name",
+            role = "input", editable = true, clickable = false,
+            actions = listOf("set_text", "focus")
+        )
+        val root = fixture().copy(children = listOf(field))
+        val result = UiActionProposalValidator.validate(
+            root,
+            UiActionProposal(
+                SemanticUiSelector(resourceId = field.resourceId),
+                SemanticUiAction.TYPE_TEXT,
+                text = "Arun",
+                rationale = "Update a non-sensitive display name"
+            )
+        )
+        assertTrue(result is UiActionValidation.ReadyForUserReview)
+    }
+
     @Test fun diffDetectsEnabledStateChange() {
         val before = fixture(enabled = true)
         val after = fixture(enabled = false)

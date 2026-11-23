@@ -1,6 +1,7 @@
 package com.eraassistant.mobile.screen
 
 import android.graphics.Bitmap
+import java.util.UUID
 import kotlin.math.roundToInt
 
 /**
@@ -10,7 +11,9 @@ import kotlin.math.roundToInt
 data class VisualFrame(
     val bitmap: Bitmap,
     val capturedAtEpochMs: Long,
-    val sourcePackage: String?
+    val sourcePackage: String?,
+    val frameId: String = UUID.randomUUID().toString(),
+    val screenFingerprint: String? = null
 )
 
 object VisualFrameStore {
@@ -18,10 +21,10 @@ object VisualFrameStore {
     private var current: VisualFrame? = null
 
     @Synchronized
-    fun replace(bitmap: Bitmap, capturedAtEpochMs: Long, sourcePackage: String?) {
+    fun replace(bitmap: Bitmap, capturedAtEpochMs: Long, sourcePackage: String?, screenFingerprint: String? = null) {
         val boundedBitmap = downscale(bitmap)
         val previous = current
-        current = VisualFrame(boundedBitmap, capturedAtEpochMs, sourcePackage)
+        current = VisualFrame(boundedBitmap, capturedAtEpochMs, sourcePackage, screenFingerprint = screenFingerprint)
         if (previous?.bitmap !== boundedBitmap) {
             runCatching { previous?.bitmap?.recycle() }
         }

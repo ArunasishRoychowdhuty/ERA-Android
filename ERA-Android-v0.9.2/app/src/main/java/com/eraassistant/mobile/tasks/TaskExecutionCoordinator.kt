@@ -4,6 +4,9 @@ import com.eraassistant.mobile.capability.*
 import com.eraassistant.mobile.observation.NormalizedObservation
 import com.eraassistant.mobile.orchestration.PlannerFeedbackLoop
 import com.eraassistant.mobile.orchestration.TaskCapabilityActionPolicy
+import com.eraassistant.mobile.execution.AutonomyExecutionPolicy
+import com.eraassistant.mobile.execution.AutonomyGateInput
+import com.eraassistant.mobile.execution.AutonomyGateDecision
 import com.eraassistant.mobile.planner.TaskPlan
 import com.eraassistant.mobile.planner.TaskRisk
 import com.eraassistant.mobile.recovery.ExecutionJournal
@@ -21,6 +24,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
 import java.security.MessageDigest
 import java.util.concurrent.atomic.AtomicReference
+import java.util.UUID
 
 /**
  * Bridges a validated planner DAG into the task ledger, capability registry,
@@ -34,7 +38,8 @@ class TaskExecutionCoordinator(
     val verificationEngine: VerificationEngine? = null,
     val executionJournal: ExecutionJournal? = null,
     val feedbackLoop: PlannerFeedbackLoop? = null,
-    private val onTaskVerified: ((TaskStateMachine) -> Unit)? = null
+    private val onTaskVerified: ((TaskStateMachine) -> Unit)? = null,
+    val taskRunId: String = "taskrun_${UUID.randomUUID()}"
 ) {
     @Volatile
     var suggestedReplanPlan: TaskPlan? = null
@@ -257,6 +262,65 @@ class TaskExecutionCoordinator(
             )
         }
         val adapter = adapterResult.getOrThrow()
+
+        // Central autonomy gate runs after exact capability, schema, live permission and adapter
+        // availability validation, but before journal claim or any adapter side effect.
+        val exactReceiptMatch = if (isConsequential) {
+            request.approvalGranted && approvalStore.matches(
+                receiptId = request.approvalReceiptId,
+                stepId = stepId,
+                request = request,
+                observationId = preObservation?.observationId
+            )
+        } else true
+        val observationFresh = !requiresObservationBinding ||
+            (preObservation != null && !preObservation.isStale(MAX_PRE_OBSERVATION_AGE_MS))
+        val gateDecision = AutonomyExecutionPolicy.decide(
+            AutonomyGateInput(
+                risk = plannedStep.risk,
+                reversible = plannedStep.reversible,
+                requiresUserApproval = isConsequential,
+                exactApprovalGranted = request.approvalGranted && !request.approvalReceiptId.isNullOrBlank(),
+                approvalMatchesAction = exactReceiptMatch,
+                approvalFresh = exactReceiptMatch,
+                observationRequired = requiresObservationBinding,
+                observationFresh = observationFresh,
+                permissionGranted = true,
+                toolAvailable = true
+            )
+        )
+        when (gateDecision) {
+            AutonomyGateDecision.ALLOW_REVERSIBLE_ACTION,
+            AutonomyGateDecision.ALLOW_APPROVED_ACTION -> Unit
+            AutonomyGateDecision.WAIT_FOR_EXACT_USER_APPROVAL -> return failure(
+                request.actionId,
+                ExecutionError(
+                    ExecutionErrorCategory.CONSEQUENTIAL_APPROVAL_REQUIRED,
+                    "A fresh one-time approval bound to this exact step, request and observation is required. No adapter was invoked."
+                )
+            )
+            AutonomyGateDecision.USER_HANDOFF_REQUIRED -> {
+                val prompt = "This critical-risk step must be completed by the user in the target app. ERA did not invoke an adapter."
+                ledger.transition(stepId, TaskStepState.WAITING_USER, prompt)
+                return StructuredActionResult.waitingUser(request.actionId, prompt)
+            }
+            AutonomyGateDecision.BLOCK_MISSING_PERMISSION -> return failure(
+                request.actionId,
+                ExecutionError(ExecutionErrorCategory.PERMISSION_DENIED, "Required Android permission is not granted. No adapter was invoked.")
+            )
+            AutonomyGateDecision.BLOCK_TOOL_UNAVAILABLE -> return failure(
+                request.actionId,
+                ExecutionError(ExecutionErrorCategory.UNSUPPORTED_CAPABILITY, "Selected adapter is unavailable. No adapter was invoked.")
+            )
+            AutonomyGateDecision.BLOCK_STALE_OBSERVATION -> return failure(
+                request.actionId,
+                ExecutionError(ExecutionErrorCategory.STALE_STATE, "A fresh pre-action observation is required. No adapter was invoked.")
+            )
+            AutonomyGateDecision.BLOCK_INVALID_APPROVAL -> return failure(
+                request.actionId,
+                ExecutionError(ExecutionErrorCategory.CONSEQUENTIAL_APPROVAL_REQUIRED, "Approval receipt is expired or bound to a different action. No adapter was invoked.")
+            )
+        }
 
         val fingerprint = ExecutionJournal.computeFingerprint(request.actionName, request.parameters)
         val claim = journal.claim(
@@ -611,10 +675,13 @@ class TaskExecutionCoordinator(
             executionJournal: ExecutionJournal? = null,
             feedbackLoop: PlannerFeedbackLoop? = null,
             onTaskVerified: ((TaskStateMachine) -> Unit)? = null,
-            statePersistence: TaskStatePersistence? = null
+            statePersistence: TaskStatePersistence? = null,
+            taskRunId: String = "taskrun_${UUID.randomUUID()}",
+            resumeLegacyFingerprintRun: Boolean = false
         ): TaskExecutionCoordinator {
             val errors = plan.validate()
             require(errors.isEmpty()) { "Invalid task plan: ${errors.joinToString()}" }
+            require(taskRunId.isNotBlank() && taskRunId.length <= 128) { "Task run ID must be between 1 and 128 characters." }
             val steps = plan.steps.map { step ->
                 AgentTaskStep(
                     id = step.id.toString(),
@@ -629,7 +696,11 @@ class TaskExecutionCoordinator(
                     requiresUserApproval = step.requiresUserApproval
                 )
             }
-            val ledger = TaskExecutionLedger(steps, persistence, fingerprint(plan))
+            val planFingerprint = fingerprint(plan)
+            // New runs always get isolated durable namespaces. Existing fingerprint-only
+            // stores remain accessible only through an explicit legacy-resume request.
+            val ledgerNamespace = if (resumeLegacyFingerprintRun) planFingerprint else taskRunId
+            val ledger = TaskExecutionLedger(steps, persistence, ledgerNamespace)
             val records = ledger.all()
             val restoredActionStates = records.associate { record ->
                 record.step.id to when (record.state) {
@@ -655,7 +726,7 @@ class TaskExecutionCoordinator(
                 else -> ExecutionState.CREATED
             }
             val sm = stateMachine ?: TaskStateMachine(
-                taskId = "task_${fingerprint(plan).take(8)}",
+                taskId = if (resumeLegacyFingerprintRun) "task_${planFingerprint.take(8)}" else "task_$taskRunId",
                 goal = plan.goal,
                 initialActions = plan.steps.map { it.id.toString() to it.title },
                 initialState = restoredTaskState,
@@ -671,7 +742,8 @@ class TaskExecutionCoordinator(
                 verificationEngine = verificationEngine ?: VerificationEngine(),
                 executionJournal = executionJournal,
                 feedbackLoop = feedbackLoop,
-                onTaskVerified = onTaskVerified
+                onTaskVerified = onTaskVerified,
+                taskRunId = if (resumeLegacyFingerprintRun) "legacy_$planFingerprint" else taskRunId
             )
         }
 

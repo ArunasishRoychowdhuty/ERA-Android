@@ -27,6 +27,11 @@ object UiActionProposalValidator {
             is SelectorResolution.Unique -> resolution.element
         }
         if (!target.enabled) return UiActionValidation.Rejected("Target is disabled.")
+        if (proposal.action == SemanticUiAction.TYPE_TEXT) {
+            SensitiveInputPolicy.rejectionReason(target, proposal.text.orEmpty())?.let {
+                return UiActionValidation.Rejected(it)
+            }
+        }
         val supported = when (proposal.action) {
             SemanticUiAction.CLICK -> target.clickable && "click" in target.actions
             SemanticUiAction.LONG_CLICK -> target.longClickable && "long_click" in target.actions

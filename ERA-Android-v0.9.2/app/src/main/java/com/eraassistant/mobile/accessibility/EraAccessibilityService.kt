@@ -2,11 +2,13 @@ package com.eraassistant.mobile.accessibility
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
+import android.accessibilityservice.GestureDescription
 import android.app.KeyguardManager
 import android.content.Context
 import android.content.SharedPreferences
 import android.graphics.Bitmap
 import android.graphics.PixelFormat
+import android.graphics.Path
 import android.graphics.Rect
 import android.os.Build
 import android.graphics.Typeface
@@ -16,6 +18,7 @@ import android.os.Handler
 import android.os.Looper
 import android.view.Display
 import android.view.Gravity
+import android.util.DisplayMetrics
 import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
@@ -36,8 +39,18 @@ import com.eraassistant.mobile.screen.UiSnapshotDiffJson
 import com.eraassistant.mobile.screen.UiTreeJson
 import com.eraassistant.mobile.screen.UiSnapshotFingerprint
 import com.eraassistant.mobile.screen.VisualFrameStore
+import com.eraassistant.mobile.screen.VisualFrameIdentity
+import com.eraassistant.mobile.screen.VisualTargetProposal
+import com.eraassistant.mobile.screen.VisualTargetResolveInput
+import com.eraassistant.mobile.screen.VisualTargetResolver
+import com.eraassistant.mobile.screen.VisualTargetResolution
 import org.json.JSONObject
 import com.eraassistant.mobile.screen.SemanticUiAction
+import com.eraassistant.mobile.screen.SensitiveInputPolicy
+import com.eraassistant.mobile.execution.AutonomyExecutionPolicy
+import com.eraassistant.mobile.execution.AutonomyGateInput
+import com.eraassistant.mobile.execution.AutonomyGateDecision
+import com.eraassistant.mobile.planner.TaskRisk
 
 /** Optional screen observer and one-shot, user-approved semantic UI action service. */
 class EraAccessibilityService : AccessibilityService() {
@@ -59,9 +72,18 @@ class EraAccessibilityService : AccessibilityService() {
     override fun onServiceConnected() {
         super.onServiceConnected()
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        activeInstance = this
         pendingActionStore = PendingUiActionStore(this)
         actionPrefs = getSharedPreferences(PendingUiActionStore.PREFS, MODE_PRIVATE)
-        actionPrefsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ -> updateOverlayLabel() }
+        actionPrefsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            updateOverlayLabel()
+            if (key == PendingUiActionStore.KEY_CONSEQUENCE_APPROVED &&
+                actionPrefs.getBoolean(PendingUiActionStore.KEY_CONSEQUENCE_APPROVED, false)) {
+                // MainActivity moves to the background after announcing OK so the
+                // original target app can regain focus. Re-observe only after that transition.
+                handler.postDelayed({ executePendingUiAction() }, 1_000L)
+            }
+        }
         actionPrefs.registerOnSharedPreferenceChangeListener(actionPrefsListener)
         appPrefs = getSharedPreferences("era_preferences", MODE_PRIVATE)
         appPrefsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
@@ -129,6 +151,7 @@ class EraAccessibilityService : AccessibilityService() {
         handler.removeCallbacksAndMessages(null)
         visualCapturePending = false
         VisualFrameStore.clear()
+        if (activeInstance === this) activeInstance = null
         if (::actionPrefs.isInitialized && ::actionPrefsListener.isInitialized) {
             actionPrefs.unregisterOnSharedPreferenceChangeListener(actionPrefsListener)
         }
@@ -189,7 +212,8 @@ class EraAccessibilityService : AccessibilityService() {
 
     private fun updateOverlayLabel() {
         inspectButton?.text = if (::pendingActionStore.isInitialized && pendingActionStore.isPending()) {
-            "ERA · Run approved action"
+            if (pendingActionStore.isAwaitingConsequenceApproval()) "ERA · Waiting for OK"
+            else "ERA · Run approved action"
         } else if (isExternalChromeTargetMode()) "ERA · Capture Chrome UI"
         else "ERA · Capture UI"
     }
@@ -309,6 +333,12 @@ class EraAccessibilityService : AccessibilityService() {
         }
 
         val sourcePackage = activeRoot.packageName?.toString()
+        val initialSnapshot = buildSnapshot(activeRoot)
+        val initialFingerprint = initialSnapshot?.let(::fingerprintSnapshot)
+        if (initialFingerprint.isNullOrBlank()) {
+            finishVisualCaptureWithError("Could not bind the screenshot to a stable UI observation.")
+            return
+        }
         visualCapturePending = true
         inspectButton?.visibility = View.INVISIBLE
         Toast.makeText(this, "Capturing one visual frame in memory…", Toast.LENGTH_SHORT).show()
@@ -352,10 +382,21 @@ class EraAccessibilityService : AccessibilityService() {
                                 return
                             }
 
+                            val currentRoot = rootInActiveWindow
+                            val currentSnapshot = currentRoot?.let(::buildSnapshot)
+                            val currentFingerprint = currentSnapshot?.let(::fingerprintSnapshot)
+                            if (currentRoot?.packageName?.toString() != sourcePackage ||
+                                currentFingerprint != initialFingerprint
+                            ) {
+                                runCatching { softwareBitmap.recycle() }
+                                finishVisualCaptureWithError("The app UI changed during capture. Capture the screen again before visual analysis.")
+                                return
+                            }
                             VisualFrameStore.replace(
                                 bitmap = softwareBitmap,
                                 capturedAtEpochMs = System.currentTimeMillis(),
-                                sourcePackage = sourcePackage
+                                sourcePackage = sourcePackage,
+                                screenFingerprint = initialFingerprint
                             )
                             visualCapturePending = false
                             inspectButton?.visibility = View.VISIBLE
@@ -382,6 +423,87 @@ class EraAccessibilityService : AccessibilityService() {
                 finishVisualCaptureWithError("Visual capture failed: ${error.message ?: "Android error"}.")
             }
         }, SCREENSHOT_OVERLAY_HIDE_DELAY_MS)
+    }
+
+    private fun fingerprintSnapshot(snapshot: UiScreenSnapshot): String? = runCatching {
+        val encoded = JSONObject(UiTreeJson.encode(snapshot))
+        UiSnapshotFingerprint.of(
+            packageName = snapshot.packageName,
+            canonicalRootJson = encoded.getJSONObject("root").toString(),
+            nodeCount = snapshot.nodeCount,
+            truncated = snapshot.truncated
+        )
+    }.getOrNull()
+
+    /** A visual click is allowed only for the exact, still-current screenshot and accessible tree. */
+    private fun dispatchGroundedVisualTap(proposal: VisualTargetProposal): String {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return "Visual gesture dispatch requires Android 7 or newer."
+        if (!isScreenInspectionConsented() || isDeviceLocked()) return "Screen consent is missing or the device is locked."
+        if (!proposal.confidence.isFinite() || proposal.confidence < VisualTargetResolver.MIN_CONFIDENCE) {
+            return "Visual target confidence is too low. Nothing was tapped."
+        }
+        if (SensitiveInputPolicy.isSensitiveField(label = proposal.label, role = proposal.role)) {
+            return "Sensitive target blocked. Nothing was tapped."
+        }
+        if (isConsequentialControl(proposal.label + " " + proposal.role + " " + proposal.actionHint)) {
+            return "Consequential control detected. Complete this action manually after review."
+        }
+        val frame = VisualFrameStore.current() ?: return "The screenshot frame has expired. Capture it again."
+        if (frame.frameId != proposal.frameId) return "The screenshot changed after analysis. Capture and analyze again."
+        val root = rootInActiveWindow ?: return "No active target app. Nothing was tapped."
+        val packageName = root.packageName?.toString() ?: return "The active app identity is unavailable."
+        if (frame.sourcePackage != packageName || proposal.sourcePackage != packageName) {
+            return "The active app differs from the analyzed screenshot. Nothing was tapped."
+        }
+        val snapshot = buildSnapshot(root) ?: return "Could not verify the current screen. Nothing was tapped."
+        val currentFingerprint = fingerprintSnapshot(snapshot)
+        val display = windowManager?.defaultDisplay ?: return "Display information is unavailable."
+        val metrics = DisplayMetrics()
+        @Suppress("DEPRECATION")
+        display.getRealMetrics(metrics)
+        val frameIdentity = VisualFrameIdentity(
+            frameId = frame.frameId,
+            sourcePackage = frame.sourcePackage ?: return "Screenshot app identity is missing.",
+            capturedAtEpochMs = frame.capturedAtEpochMs,
+            frameWidth = frame.bitmap.width,
+            frameHeight = frame.bitmap.height,
+            displayWidth = metrics.widthPixels,
+            displayHeight = metrics.heightPixels,
+            displayRotation = display.rotation,
+            screenFingerprint = frame.screenFingerprint
+        )
+        val resolution = VisualTargetResolver.resolve(
+            VisualTargetResolveInput(
+                frame = frameIdentity,
+                proposal = proposal,
+                currentPackage = packageName,
+                currentDisplayWidth = metrics.widthPixels,
+                currentDisplayHeight = metrics.heightPixels,
+                currentDisplayRotation = display.rotation,
+                nowEpochMs = System.currentTimeMillis(),
+                explicitlyApproved = true,
+                currentUiFingerprint = currentFingerprint
+            )
+        )
+        val target = (resolution as? VisualTargetResolution.Accepted)?.target
+            ?: return "Visual target rejected as stale, changed or ambiguous. Capture again."
+        val path = Path().apply {
+            moveTo(target.centerXOnDisplay.toFloat(), target.centerYOnDisplay.toFloat())
+        }
+        val gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path, 0L, 65L))
+            .build()
+        val accepted = dispatchGesture(gesture, object : GestureResultCallback() {
+            override fun onCompleted(gestureDescription: GestureDescription?) {
+                Toast.makeText(this@EraAccessibilityService, "Approved visual tap dispatched. Rechecking screen…", Toast.LENGTH_LONG).show()
+                handler.postDelayed({ captureCurrentWindow(showToast = false) }, POST_ACTION_VERIFY_DELAY_MS)
+            }
+            override fun onCancelled(gestureDescription: GestureDescription?) {
+                Toast.makeText(this@EraAccessibilityService, "Android cancelled the visual tap. No retry was attempted.", Toast.LENGTH_LONG).show()
+            }
+        }, handler)
+        return if (accepted) "Android accepted one tap on '" + target.label + "'. The screen will be re-observed; ERA will not retry automatically."
+        else "Android rejected the gesture. Nothing further was attempted."
     }
 
     private fun finishVisualCaptureWithError(message: String) {
@@ -490,12 +612,103 @@ class EraAccessibilityService : AccessibilityService() {
             }
         }
 
-        if (semanticAction == SemanticUiAction.CLICK && isConsequentialControl(target.text.orEmpty() + " " + target.contentDescription.orEmpty() + " " + target.hintText.orEmpty() + " " + target.resourceId.orEmpty() + " " + target.role)) {
-            storeSnapshot(snapshot)
-            pendingActionStore.clearPending("This control appears consequential. ERA leaves it for a separate manual tap.")
-            return
+        if (semanticAction == SemanticUiAction.TYPE_TEXT) {
+            val sensitiveReason = SensitiveInputPolicy.rejectionReason(target, pending.payload)
+            if (sensitiveReason != null) {
+                storeSnapshot(snapshot)
+                pendingActionStore.clearPending(sensitiveReason)
+                updateOverlayLabel()
+                Toast.makeText(this, sensitiveReason, Toast.LENGTH_LONG).show()
+                return
+            }
         }
 
+        val consequentialTarget = isConsequentialControl(
+            target.text.orEmpty() + " " + target.contentDescription.orEmpty() + " " +
+                target.hintText.orEmpty() + " " + target.resourceId.orEmpty() + " " + target.role
+        )
+        val risk = when {
+            consequentialTarget -> TaskRisk.CRITICAL
+            semanticAction == SemanticUiAction.CLICK || semanticAction == SemanticUiAction.TYPE_TEXT -> TaskRisk.HIGH
+            else -> TaskRisk.LOW
+        }
+        val reversible = semanticAction == SemanticUiAction.SCROLL_FORWARD ||
+            semanticAction == SemanticUiAction.SCROLL_BACKWARD
+        val approvalAgeMs = System.currentTimeMillis() - pending.createdAtEpochMs
+        val exactApprovalFresh = approvalAgeMs in 0..MAX_PENDING_APPROVAL_AGE_MS &&
+            pending.expectedPackage.equals(snapshot.packageName, ignoreCase = true) &&
+            pending.reviewedObservationId == freshObservationId &&
+            pending.action == when (semanticAction) {
+                SemanticUiAction.CLICK -> PendingUiActionStore.ACTION_CLICK
+                SemanticUiAction.TYPE_TEXT -> PendingUiActionStore.ACTION_TYPE_TEXT
+                SemanticUiAction.SCROLL_FORWARD -> PendingUiActionStore.ACTION_SCROLL_FORWARD
+                SemanticUiAction.SCROLL_BACKWARD -> PendingUiActionStore.ACTION_SCROLL_BACKWARD
+                else -> ""
+            }
+        val decision = AutonomyExecutionPolicy.decide(
+            AutonomyGateInput(
+                risk = risk,
+                reversible = reversible,
+                requiresUserApproval = true,
+                exactApprovalGranted = true,
+                approvalMatchesAction = exactApprovalFresh,
+                approvalFresh = exactApprovalFresh,
+                observationRequired = true,
+                observationFresh = freshObservationId == pending.reviewedObservationId,
+                permissionGranted = isScreenInspectionConsented() && !isDeviceLocked(),
+                toolAvailable = rootInActiveWindow != null,
+                consequentialApprovalGranted = risk != TaskRisk.CRITICAL || pendingActionStore.hasConsequenceApproval(pending),
+                allowConsequentialDispatch = true
+            )
+        )
+        when (decision) {
+            AutonomyGateDecision.ALLOW_REVERSIBLE_ACTION,
+            AutonomyGateDecision.ALLOW_APPROVED_ACTION -> Unit
+            AutonomyGateDecision.USER_HANDOFF_REQUIRED -> {
+                storeSnapshot(snapshot)
+                pendingActionStore.clearPending("This action is consequential. ERA will not dispatch it; complete it manually in the target app.")
+                updateOverlayLabel()
+                Toast.makeText(this, "Consequential action left for manual completion", Toast.LENGTH_LONG).show()
+                return
+            }
+            AutonomyGateDecision.WAIT_FOR_EXACT_USER_APPROVAL -> {
+                if (risk == TaskRisk.CRITICAL && exactApprovalFresh && !pendingActionStore.hasConsequenceApproval(pending)) {
+                    pendingActionStore.setResult("Waiting for your final voice confirmation in ERA. Say OK only after reviewing the action summary.")
+                    storeSnapshot(snapshot)
+                    updateOverlayLabel()
+                    Toast.makeText(this, "Waiting for your OK in ERA", Toast.LENGTH_LONG).show()
+                } else {
+                    pendingActionStore.clearPending("A fresh exact approval is required. Review the current screen and approve again.")
+                    storeSnapshot(snapshot)
+                    updateOverlayLabel()
+                }
+                return
+            }
+            AutonomyGateDecision.BLOCK_INVALID_APPROVAL,
+            AutonomyGateDecision.BLOCK_STALE_OBSERVATION -> {
+                pendingActionStore.clearPending("Approval or screen observation is stale or does not match. Review and approve again.")
+                storeSnapshot(snapshot)
+                updateOverlayLabel()
+                return
+            }
+            AutonomyGateDecision.BLOCK_MISSING_PERMISSION -> {
+                pendingActionStore.clearPending("Screen-inspection consent is not active. Action was not run.")
+                updateOverlayLabel()
+                return
+            }
+            AutonomyGateDecision.BLOCK_TOOL_UNAVAILABLE -> {
+                pendingActionStore.clearPending("Accessibility action service is unavailable. Action was not run.")
+                updateOverlayLabel()
+                return
+            }
+        }
+
+        // Consequential controls require a separate, exact, fresh voice confirmation.
+        if (risk == TaskRisk.CRITICAL && !pendingActionStore.consumeConsequenceApproval(pending)) {
+            pendingActionStore.clearPending("Final confirmation was missing or expired. Nothing was run.")
+            updateOverlayLabel()
+            return
+        }
         // The pending approval is consumed before execution: retries require a new user approval.
         pendingActionStore.consume()
         val liveNode = nodeAtFreshPath(root, target.nodeKey)
@@ -571,17 +784,8 @@ class EraAccessibilityService : AccessibilityService() {
         pendingActionStore.setResult(message)
     }
 
-    private fun isConsequentialControl(value: String): Boolean {
-        val lower = value.lowercase().trim()
-        val normalized = lower.replace(Regex("[_-]+"), " ")
-        val risky = listOf(
-            "send", "publish", "post", "submit", "pay", "payment", "purchase", "buy", "checkout", "delete", "remove",
-            "share", "transfer", "call", "confirm", "allow", "grant", "install", "place order", "subscribe",
-            "পাঠান", "পাঠিয়ে দিন", "পোস্ট", "প্রকাশ", "জমা দিন", "দাখিল", "পেমেন্ট", "পরিশোধ", "কিনুন",
-            "মুছে ফেল", "ডিলিট", "ট্রান্সফার", "নিশ্চিত করুন", "শেয়ার", "কল", "অনুমতি দিন", "ইনস্টল", "অর্ডার", "স্থানান্তর"
-        )
-        return risky.any { normalized == it || normalized.contains(it) }
-    }
+    private fun isConsequentialControl(value: String): Boolean =
+        com.eraassistant.mobile.screen.ConsequentialActionPolicy.classifyLabel(value) != null
 
     private fun buildSnapshot(root: AccessibilityNodeInfo): UiScreenSnapshot? {
         nodeCounter = 0
@@ -757,7 +961,15 @@ class EraAccessibilityService : AccessibilityService() {
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
-    private companion object {
+    companion object {
+        @Volatile private var activeInstance: EraAccessibilityService? = null
+
+        fun dispatchGroundedVisualTap(proposal: VisualTargetProposal): String {
+            val service = activeInstance ?: return "ERA Accessibility service is not running."
+            if (Looper.myLooper() != Looper.getMainLooper()) return "Visual tap must be requested on the Android main thread."
+            return service.dispatchGroundedVisualTap(proposal)
+        }
+
         const val PREFS = "era_ui_snapshot"
         const val KEY_JSON = "latest_json"
         const val KEY_CAPTURED_AT = "captured_at"
@@ -772,6 +984,7 @@ class EraAccessibilityService : AccessibilityService() {
         const val MAX_DEPTH = 30
         const val MAX_TEXT_LENGTH = 300
         const val AUTO_CAPTURE_DEBOUNCE_MS = 450L
+        const val MAX_PENDING_APPROVAL_AGE_MS = 120_000L
         const val SCREENSHOT_OVERLAY_HIDE_DELAY_MS = 180L
         const val POST_ACTION_VERIFY_DELAY_MS = 700L
     }

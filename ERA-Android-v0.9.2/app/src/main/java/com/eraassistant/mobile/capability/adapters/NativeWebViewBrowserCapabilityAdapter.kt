@@ -28,6 +28,7 @@ class NativeWebViewBrowserCapabilityAdapter(
             ACTION_CLICK,
             ACTION_FILL,
             ACTION_TYPE,
+            ACTION_FOCUS_AND_SHOW_KEYBOARD,
             ACTION_PRESS_KEY,
             ACTION_CHECK,
             ACTION_UNCHECK,
@@ -45,7 +46,9 @@ class NativeWebViewBrowserCapabilityAdapter(
             "Controls only pages inside ERA's WebView",
             "HTTPS pages only",
             "Up to 5 simultaneous tabs",
-            "Consequential actions and sensitive fills require user approval"
+            "Consequential actions require one-time approval",
+            "Sensitive credential and payment fields are hard-blocked from ERA text entry",
+            "The native keyboard action opens the user's selected Android IME for an ordinary editable field"
         ),
         worksOffline = false,
         actionSchemas = CapabilitySchemas.nativeWebView()
@@ -73,7 +76,7 @@ class NativeWebViewBrowserCapabilityAdapter(
                     return ExecutionError(ExecutionErrorCategory.INVALID_REQUEST, "Parameter 'url' is required.")
                 }
             }
-            ACTION_CLICK, ACTION_FILL, ACTION_TYPE, ACTION_PRESS_KEY,
+            ACTION_CLICK, ACTION_FILL, ACTION_TYPE, ACTION_FOCUS_AND_SHOW_KEYBOARD, ACTION_PRESS_KEY,
             ACTION_CHECK, ACTION_UNCHECK, ACTION_SELECT_OPTION, ACTION_SCROLL_INTO_VIEW -> {
                 val ref = request.param<String>("ref")
                 if (ref.isNullOrBlank()) {
@@ -147,6 +150,19 @@ class NativeWebViewBrowserCapabilityAdapter(
                     val text = request.stringParam("text")
                     val result = client.performAction(activeId, ref, "type", text = text, confirmed = confirmed)
                     createActionResult(request.actionId, result, start)
+                }
+                ACTION_FOCUS_AND_SHOW_KEYBOARD -> {
+                    val ref = request.stringParam("ref")
+                    val ime = client.focusAndShowSystemKeyboard(activeId, ref)
+                    StructuredActionResult.success(
+                        actionId = request.actionId,
+                        outputData = mapOf(
+                            "requestAccepted" to ime.requestAccepted,
+                            "visibleAtCheck" to ime.visibleAtCheck,
+                            "message" to ime.message
+                        ),
+                        durationMs = SystemClock.elapsedRealtime() - start
+                    )
                 }
                 ACTION_PRESS_KEY -> {
                     val ref = request.stringParam("ref")
@@ -320,6 +336,7 @@ class NativeWebViewBrowserCapabilityAdapter(
         const val ACTION_CLICK = "browser.webview.click"
         const val ACTION_FILL = "browser.webview.fill"
         const val ACTION_TYPE = "browser.webview.type"
+        const val ACTION_FOCUS_AND_SHOW_KEYBOARD = "browser.webview.focus_and_show_keyboard"
         const val ACTION_PRESS_KEY = "browser.webview.press_key"
         const val ACTION_CHECK = "browser.webview.check"
         const val ACTION_UNCHECK = "browser.webview.uncheck"

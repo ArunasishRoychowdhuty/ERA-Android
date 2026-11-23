@@ -1,6 +1,20 @@
 package com.eraassistant.mobile.ui
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -22,6 +36,8 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Shapes
+import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -34,18 +50,25 @@ import androidx.compose.ui.text.input.KeyboardType
 import com.eraassistant.mobile.provider.AIProviderKind
 import com.eraassistant.mobile.browser.PhoneBrowserAgentUiState
 import com.eraassistant.mobile.browser.PhoneBrowserAgentPolicy
+import com.eraassistant.mobile.search.VisualScreenAnalysis
+import com.eraassistant.mobile.search.VisualControlCandidate
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.key
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.viewinterop.AndroidView
 import android.view.ViewGroup
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.eraassistant.mobile.preferences.CustomCommandAlias
 import com.eraassistant.mobile.contacts.PendingCallConfirmation
@@ -56,6 +79,171 @@ import com.eraassistant.mobile.screen.VisualFrame
 import com.eraassistant.mobile.shizuku.ShizukuBridgeState
 import com.eraassistant.mobile.storage.StorageDocument
 import com.eraassistant.mobile.storage.StorageTextPreview
+
+
+private val EraShapes = Shapes(
+    extraSmall = RoundedCornerShape(12.dp),
+    small = RoundedCornerShape(18.dp),
+    medium = RoundedCornerShape(22.dp),
+    large = RoundedCornerShape(28.dp),
+    extraLarge = RoundedCornerShape(34.dp)
+)
+
+private val EraDarkColorScheme = darkColorScheme(
+    primary = Color(0xFFB9A5FF),
+    onPrimary = Color(0xFF21163F),
+    primaryContainer = Color(0xFF30244F),
+    onPrimaryContainer = Color(0xFFEDE6FF),
+    secondary = Color(0xFF78E0C8),
+    onSecondary = Color(0xFF082F29),
+    background = Color(0xFF0A1020),
+    onBackground = Color(0xFFEAF0FC),
+    surface = Color(0xFF141D30),
+    onSurface = Color(0xFFEAF0FC),
+    surfaceVariant = Color(0xFF202C43),
+    onSurfaceVariant = Color(0xFFB8C5DA),
+    outline = Color(0xFF465571),
+    error = Color(0xFFFF8B9A)
+)
+
+@Composable
+private fun EraTopBar() {
+    Surface(
+        color = Color.Transparent,
+        shadowElevation = 5.dp,
+        shape = RoundedCornerShape(bottomStart = 24.dp, bottomEnd = 24.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(
+                    Brush.horizontalGradient(
+                        listOf(Color(0xFF18243C), Color(0xFF202B49), Color(0xFF18243C))
+                    )
+                )
+                .padding(horizontal = 20.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primary) {
+                Text(
+                    "E",
+                    modifier = Modifier.padding(horizontal = 15.dp, vertical = 8.dp),
+                    style = MaterialTheme.typography.titleLarge,
+                    color = MaterialTheme.colorScheme.onPrimary
+                )
+            }
+            Column(
+                modifier = Modifier.padding(start = 12.dp).weight(1f),
+                verticalArrangement = Arrangement.spacedBy(1.dp)
+            ) {
+                Text("ERA", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurface)
+                Text("Your local-first assistant", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            StatusPill("v0.9.4", true)
+        }
+    }
+}
+
+@Composable
+private fun EraPageHeading(selectedTab: Int) {
+    val heading = when (selectedTab) {
+        1 -> Triple("TOOLS & WORKFLOWS", "Agents", "Browser, product search, files and reusable voice workflows.")
+        2 -> Triple("SCREEN INTELLIGENCE", "Screen inspector", "Inspect visible UI and review every proposed interaction.")
+        3 -> Triple("DEVICE CONFIGURATION", "Settings", "Permissions, connectivity, AI provider and voice preferences.")
+        4 -> Triple("PERSONAL PRODUCTIVITY", "Personal", "Reminders, Calendar and encrypted memory controls.")
+        else -> Triple("COMMAND CENTER", "What would you like ERA to do?", "Fast local commands with user-approved actions.")
+    }
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.large,
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp)
+        ) {
+            Text(
+                heading.first,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.secondary,
+                fontWeight = FontWeight.SemiBold
+            )
+            Text(
+                heading.second,
+                style = MaterialTheme.typography.headlineSmall,
+                color = MaterialTheme.colorScheme.onBackground
+            )
+            Text(
+                heading.third,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+@Composable
+private fun EraBottomNavigation(selectedTab: Int, onSelect: (Int) -> Unit) {
+    val items = listOf(
+        Triple("⌂", "Home", "Home"),
+        Triple("✧", "Agents", "Agents"),
+        Triple("▣", "Screen", "Screen"),
+        Triple("⚙", "Settings", "Settings"),
+        Triple("◷", "Personal", "Personal")
+    )
+
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.surface,
+        shadowElevation = 14.dp,
+        shape = RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.16f))
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 9.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(5.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            items.forEachIndexed { index, item ->
+                val selected = selectedTab == index
+                val tileColor by animateColorAsState(
+                    targetValue = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.17f) else Color.Transparent,
+                    animationSpec = tween(220),
+                    label = "nav-tile-color-$index"
+                )
+                val iconColor by animateColorAsState(
+                    targetValue = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    animationSpec = tween(220),
+                    label = "nav-icon-color-$index"
+                )
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(18.dp))
+                        .clickable { onSelect(index) }
+                        .background(tileColor)
+                        .padding(horizontal = 4.dp, vertical = 8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(3.dp)
+                ) {
+                    Text(
+                        item.first,
+                        style = MaterialTheme.typography.titleLarge,
+                        color = iconColor,
+                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
+                    )
+                    Text(
+                        item.second,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal
+                    )
+                }
+            }
+        }
+    }
+}
 
 @Composable
 fun ERAScreen(
@@ -133,6 +321,11 @@ fun ERAScreen(
     visualFrame: VisualFrame?,
     visualCaptureStatus: String,
     onClearVisualFrame: () -> Unit,
+    visualScreenAnalysis: VisualScreenAnalysis?,
+    visualScreenAnalysisStatus: String,
+    visualScreenAnalysisRunning: Boolean,
+    onAnalyzeVisualScreen: () -> Unit,
+    onDispatchVisualTarget: (VisualControlCandidate) -> Unit,
     onVoiceSessionChange: (Boolean) -> Unit,
     onRequestMicrophonePermission: () -> Unit,
     onRequestCameraPermission: () -> Unit,
@@ -194,8 +387,27 @@ fun ERAScreen(
     onReloadUiSnapshot: () -> Unit,
     onCopyUiSnapshot: () -> Unit,
     onCopyAiContext: () -> Unit,
-    onClearUiSnapshot: () -> Unit
+    onClearUiSnapshot: () -> Unit,
+    reminders: List<com.eraassistant.mobile.productivity.ReminderUiItem>,
+    managedMemories: List<com.eraassistant.mobile.productivity.ManagedMemoryUiItem>,
+    agentMemoryRecords: List<com.eraassistant.mobile.memory.MemoryRecord>,
+    notificationPermissionGranted: Boolean,
+    exactAlarmAllowed: Boolean,
+    calendarPermissionsGranted: Boolean,
+    productivityStatus: String,
+    onCreateReminder: (String, Long) -> Unit,
+    onDeleteReminder: (String) -> Unit,
+    onSyncReminderToCalendar: (String) -> Unit,
+    onCreateMemory: (String, String, String) -> Unit,
+    onDeleteMemory: (String) -> Unit,
+    onClearManagedMemory: () -> Unit,
+    onDeleteAgentMemory: (com.eraassistant.mobile.memory.MemoryCategory, String) -> Unit,
+    onClearAgentMemory: () -> Unit,
+    onRequestNotificationPermission: () -> Unit,
+    onRequestExactAlarmPermission: () -> Unit,
+    onRequestCalendarPermissions: () -> Unit
 ) {
+    var selectedTab by rememberSaveable { mutableStateOf(0) }
     var aliasPhrase by remember { mutableStateOf("") }
     var pendingBrowserPermissionPrompt by remember { mutableStateOf<String?>(null) }
     var aliasTarget by remember { mutableStateOf("") }
@@ -206,17 +418,31 @@ fun ERAScreen(
     var taskVerificationEvidence by remember { mutableStateOf("") }
     var historyQuery by remember { mutableStateOf("") }
     var showVisualUploadConfirmation by remember { mutableStateOf(false) }
+    var showVisualAnalysisUploadConfirmation by remember { mutableStateOf(false) }
+    var pendingVisualControlTap by remember { mutableStateOf<VisualControlCandidate?>(null) }
 
-    MaterialTheme {
+    MaterialTheme(colorScheme = EraDarkColorScheme, shapes = EraShapes) {
         Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
             Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .windowInsetsPadding(WindowInsets.systemBars)
-                    .verticalScroll(rememberScrollState())
-                    .padding(18.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp)
+                modifier = Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.systemBars),
+                verticalArrangement = Arrangement.spacedBy(0.dp)
             ) {
+                EraTopBar()
+                AnimatedContent(
+                    targetState = selectedTab,
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    transitionSpec = {
+                        (fadeIn(tween(240)) + slideInVertically(tween(240)) { height -> height / 18 }) togetherWith
+                            (fadeOut(tween(150)) + slideOutVertically(tween(150)) { height -> -height / 28 })
+                    },
+                    label = "era-page-transition"
+                ) { activeTab ->
+                    Column(
+                        modifier = Modifier.fillMaxSize()
+                            .verticalScroll(rememberScrollState())
+                            .padding(horizontal = 18.dp, vertical = 16.dp),
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
                 pendingBrowserPermissionPrompt?.let { prompt ->
                     val isActionPrompt = prompt.startsWith("action:")
                     val actionName = if (isActionPrompt) prompt.substringAfter(':') else ""
@@ -287,6 +513,30 @@ fun ERAScreen(
                     }
                 }
 
+                EraPageHeading(activeTab)
+                if (activeTab == 4) {
+                    ProductivityScreen(
+                        reminders = reminders,
+                        memories = managedMemories,
+                        agentMemoryRecords = agentMemoryRecords,
+                        notificationPermissionGranted = notificationPermissionGranted,
+                        exactAlarmAllowed = exactAlarmAllowed,
+                        calendarPermissionsGranted = calendarPermissionsGranted,
+                        status = productivityStatus,
+                        onCreateReminder = onCreateReminder,
+                        onDeleteReminder = onDeleteReminder,
+                        onSyncReminderToCalendar = onSyncReminderToCalendar,
+                        onCreateMemory = onCreateMemory,
+                        onDeleteMemory = onDeleteMemory,
+                        onClearMemories = onClearManagedMemory,
+                        onDeleteAgentMemory = onDeleteAgentMemory,
+                        onClearAgentMemory = onClearAgentMemory,
+                        onRequestNotificationPermission = onRequestNotificationPermission,
+                        onRequestExactAlarmPermission = onRequestExactAlarmPermission,
+                        onRequestCalendarPermissions = onRequestCalendarPermissions
+                    )
+                }
+                if (activeTab == 1) {
                 Card {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text("Contact search · name, alias or number", style = MaterialTheme.typography.titleMedium)
@@ -332,11 +582,24 @@ fun ERAScreen(
                         }
                     }
                 }
+                }
+                if (activeTab == 0) {
                 Card(
+                    modifier = Modifier.fillMaxWidth().animateContentSize(tween(240)),
                     shape = MaterialTheme.shapes.extraLarge,
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
+                    border = BorderStroke(1.dp, Color(0xFFB9A5FF).copy(alpha = 0.26f)),
+                    colors = CardDefaults.cardColors(containerColor = Color.Transparent)
                 ) {
-                    Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Column(
+                        Modifier.fillMaxWidth()
+                            .background(
+                                Brush.linearGradient(
+                                    listOf(Color(0xFF342957), Color(0xFF263B5A), Color(0xFF1D4850))
+                                )
+                            )
+                            .padding(22.dp),
+                        verticalArrangement = Arrangement.spacedBy(13.dp)
+                    ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                                 Text("ERA", style = MaterialTheme.typography.headlineLarge, color = MaterialTheme.colorScheme.onPrimaryContainer)
@@ -347,7 +610,7 @@ fun ERAScreen(
                                 color = MaterialTheme.colorScheme.primary
                             ) {
                                 Text(
-                                    "v0.8.0-dev",
+                                    "v0.9.4",
                                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                                     style = MaterialTheme.typography.labelMedium,
                                     color = MaterialTheme.colorScheme.onPrimary
@@ -366,7 +629,9 @@ fun ERAScreen(
                         }
                     }
                 }
+                }
 
+                if (activeTab == 3) {
                 Card {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
                         Text("Shizuku · Android system bridge", style = MaterialTheme.typography.titleMedium)
@@ -413,7 +678,9 @@ fun ERAScreen(
                         }
                     }
                 }
+                }
 
+                if (activeTab == 3) {
                 Card {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
                         Text("Remote Connectivity V3 · private gateway", style = MaterialTheme.typography.titleMedium)
@@ -472,7 +739,9 @@ fun ERAScreen(
                         Text(remoteGatewayStatus, style = MaterialTheme.typography.bodySmall)
                     }
                 }
+                }
 
+                if (activeTab == 3) {
                 Card {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
                         Text("One-time permission setup", style = MaterialTheme.typography.titleMedium)
@@ -512,7 +781,9 @@ fun ERAScreen(
                         }
                     }
                 }
+                }
 
+                if (activeTab == 0) {
                 Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Text("Command", style = MaterialTheme.typography.titleMedium)
@@ -536,7 +807,9 @@ fun ERAScreen(
                         }
                     }
                 }
+                }
 
+                if (activeTab == 0) {
                 Card {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
                         Text("Quick commands", style = MaterialTheme.typography.titleMedium)
@@ -553,7 +826,9 @@ fun ERAScreen(
                         QuickRow("Wi-Fi settings খোলো", "Bluetooth settings খোলো", onQuickCommand)
                     }
                 }
+                }
 
+                if (activeTab == 2) {
                 Card {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
                         Text("Structured UI Inspector", style = MaterialTheme.typography.titleMedium)
@@ -708,8 +983,55 @@ fun ERAScreen(
                         }
                     }
                 }
+                }
 
+                if (activeTab == 2) {
                 if (visualFrame != null || visualCaptureStatus.isNotBlank()) {
+                if (showVisualAnalysisUploadConfirmation) {
+                    AlertDialog(
+                        onDismissRequest = { showVisualAnalysisUploadConfirmation = false },
+                        title = { Text("Analyze this screenshot with AI?") },
+                        text = {
+                            Text(
+                                "The full manually captured screen image will be sent over HTTPS to your configured vision provider. It can contain private text or account information. ERA filters sensitive target labels locally, but cannot guarantee every pixel is free of personal information. This is a separate one-time upload consent.",
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                        },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                showVisualAnalysisUploadConfirmation = false
+                                onAnalyzeVisualScreen()
+                            }) { Text("Send once and analyze UI") }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { showVisualAnalysisUploadConfirmation = false }) { Text("Cancel") }
+                        }
+                    )
+                }
+                if (pendingVisualControlTap != null) {
+                    val candidate = pendingVisualControlTap!!
+                    AlertDialog(
+                        onDismissRequest = { pendingVisualControlTap = null },
+                        title = { Text("Tap this exact visible control?") },
+                        text = {
+                            Text(
+                                candidate.label + " · " + candidate.role + " · " +
+                                    (candidate.confidence * 100).toInt() + "% confidence. " +
+                                    candidate.actionHint + " Only this one tap will be attempted. Send, publish, pay, delete and submit controls are excluded.",
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                        },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                pendingVisualControlTap = null
+                                onDispatchVisualTarget(candidate)
+                            }) { Text("Approve one tap") }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { pendingVisualControlTap = null }) { Text("Cancel") }
+                        }
+                    )
+                }
                 if (showVisualUploadConfirmation) {
                     AlertDialog(
                         onDismissRequest = { showVisualUploadConfirmation = false },
@@ -730,6 +1052,7 @@ fun ERAScreen(
                             TextButton(onClick = { showVisualUploadConfirmation = false }) { Text("Cancel") }
                         }
                     )
+                }
                 }
 
                     Card {
@@ -760,8 +1083,36 @@ fun ERAScreen(
                                 ) {
                                     Text(if (productRecognitionRunning) "Identifying product…" else "Identify product with configured AI")
                                 }
+                                OutlinedButton(
+                                    onClick = { showVisualAnalysisUploadConfirmation = true },
+                                    enabled = !visualScreenAnalysisRunning,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text(if (visualScreenAnalysisRunning) "Analyzing controls…" else "Understand visible screen controls")
+                                }
+                                visualScreenAnalysis?.let { analysis ->
+                                    Text(analysis.summary, style = MaterialTheme.typography.bodyMedium)
+                                    analysis.controls.forEach { candidate ->
+                                        Card {
+                                            Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                                Text(candidate.label + " · " + candidate.role, style = MaterialTheme.typography.titleSmall)
+                                                Text(candidate.actionHint + " · " + (candidate.confidence * 100).toInt() + "% confidence",
+                                                    style = MaterialTheme.typography.bodySmall)
+                                                OutlinedButton(
+                                                    onClick = { pendingVisualControlTap = candidate },
+                                                    enabled = candidate.confidence >= 0.90 && !visualScreenAnalysisRunning,
+                                                    modifier = Modifier.fillMaxWidth()
+                                                ) { Text("Review and approve one tap") }
+                                            }
+                                        }
+                                    }
+                                }
+                                if (visualScreenAnalysisStatus.isNotBlank()) {
+                                    Text(visualScreenAnalysisStatus, style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
                                 Text(
-                                    "The frame is streamed from RAM only after you select a receiving app in Android Sharesheet. ERA does not save it or upload it automatically.",
+                                    "The frame remains in RAM. Screen analysis and product identification each require separate one-time upload consent. Visual taps require a fresh matching screen and a second exact approval.",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -773,6 +1124,7 @@ fun ERAScreen(
                     }
                 }
 
+                if (activeTab == 1) {
                 Card {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text("Product price search", style = MaterialTheme.typography.titleMedium)
@@ -800,7 +1152,9 @@ fun ERAScreen(
                         }
                     }
                 }
+                }
 
+                if (activeTab == 1) {
                 Card {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text("Scoped File Access", style = MaterialTheme.typography.titleMedium)
@@ -856,7 +1210,9 @@ fun ERAScreen(
                         }
                     }
                 }
+                }
 
+                if (activeTab == 3) {
                 Card {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text("AI provider settings", style = MaterialTheme.typography.titleMedium)
@@ -935,7 +1291,9 @@ fun ERAScreen(
                         Text(aiProviderConnectionStatus, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
+                }
 
+                if (activeTab == 1) {
                 Card {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text("Instagram preparation", style = MaterialTheme.typography.titleMedium)
@@ -972,7 +1330,9 @@ fun ERAScreen(
                         }
                     }
                 }
+                }
 
+                if (activeTab == 1) {
                 Card {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
                         Text("ERA Browser Agent · Built-in browser", style = MaterialTheme.typography.titleMedium)
@@ -1175,12 +1535,22 @@ fun ERAScreen(
                                 }
                                 if (node.sensitive || PhoneBrowserAgentPolicy.isSensitive(node)) {
                                     Text(
-                                        "Sensitive field detected. Filling is available after a one-time confirmation; the supplied text is not added to the action log.",
+                                        "Sensitive credential, verification or payment field. ERA text entry is blocked; use the website's sign-in flow or Android Autofill.",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.error
                                     )
                                 }
                                 if (node.editable && PhoneBrowserAgentPolicy.canFill(node)) {
+                                    OutlinedButton(
+                                        onClick = { onRunPhoneBrowserAction("focus_and_show_keyboard", false) },
+                                        enabled = !phoneBrowserAgent.busy,
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) { Text("Open Android keyboard for this field") }
+                                    Text(
+                                        "Type directly with your selected Android keyboard. ERA does not read or store those keystrokes.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
                                     OutlinedTextField(
                                         value = phoneBrowserAgent.fillText,
                                         onValueChange = onPhoneBrowserFillTextChange,
@@ -1272,7 +1642,9 @@ fun ERAScreen(
                         )
                     }
                 }
+                }
 
+                if (activeTab == 3) {
                 Card {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text("Voice preferences", style = MaterialTheme.typography.titleMedium)
@@ -1298,7 +1670,9 @@ fun ERAScreen(
                         }
                     }
                 }
+                }
 
+                if (activeTab == 3) {
                 Card {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text("Foreground voice session", style = MaterialTheme.typography.titleMedium)
@@ -1309,7 +1683,9 @@ fun ERAScreen(
                         Text(if (voiceSessionActive) "Listening session active" else "Session stopped", style = MaterialTheme.typography.labelMedium)
                     }
                 }
+                }
 
+                if (activeTab == 1) {
                 Card {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text("Custom voice phrases", style = MaterialTheme.typography.titleMedium)
@@ -1349,14 +1725,18 @@ fun ERAScreen(
                         }
                     }
                 }
+                }
 
+                if (activeTab == 0) {
                 Card {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text("Status", style = MaterialTheme.typography.titleMedium)
                         Text(status, style = MaterialTheme.typography.bodyMedium)
                     }
                 }
+                }
 
+                if (activeTab == 0) {
                 if (taskMonitorText.isNotBlank()) {
                     Card {
                         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1445,7 +1825,9 @@ fun ERAScreen(
                         }
                     }
                 }
+                }
 
+                if (activeTab == 0) {
                 if (planPreview.isNotBlank()) {
                     Card {
                         Column(Modifier.padding(16.dp)) {
@@ -1455,7 +1837,9 @@ fun ERAScreen(
                         }
                     }
                 }
+                }
 
+                if (activeTab == 0) {
                 Card {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
@@ -1479,12 +1863,18 @@ fun ERAScreen(
                         }
                     }
                 }
+                }
 
+                if (activeTab == 3) {
                 Text(
                     "Privacy: microphone চালু হয় শুধু user action-এ; background-এ গেলে foreground voice session বন্ধ হয়। Screen Inspector optional; visual frame শুধু overlay long-press করলে capture হয়, memory-তে থাকে, 1440px-এর মধ্যে downscale হয় এবং কোনো image file বা automatic upload হয় না। Password fields redact হয়, কিন্তু অন্য screen text personal হতে পারে—copy করার আগে review করো। Remote AI optional এবং শুধু enabled provider setting-এ task goal পাঠায়; local mode default। Send/Publish/Pay/Delete/Submit ERA নিজে final tap করে না।",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                    }
+                }
+                }
+                EraBottomNavigation(selectedTab = selectedTab, onSelect = { selectedTab = it })
             }
         }
     }
@@ -1492,17 +1882,19 @@ fun ERAScreen(
 
 @Composable
 private fun StatusPill(label: String, active: Boolean) {
+    val tint = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
     Surface(
-        shape = MaterialTheme.shapes.small,
-        color = if (active) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
-        else MaterialTheme.colorScheme.surfaceVariant
+        shape = RoundedCornerShape(50),
+        color = if (active) MaterialTheme.colorScheme.primary.copy(alpha = 0.13f)
+        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f),
+        border = BorderStroke(1.dp, tint.copy(alpha = 0.28f))
     ) {
         Text(
             label,
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
             style = MaterialTheme.typography.labelSmall,
-            color = if (active) MaterialTheme.colorScheme.primary
-            else MaterialTheme.colorScheme.onSurfaceVariant
+            color = tint,
+            fontWeight = FontWeight.SemiBold
         )
     }
 }

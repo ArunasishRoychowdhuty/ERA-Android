@@ -44,7 +44,7 @@ object UiAgentContextBuilder {
             }
             appendLine("RULES:")
             appendLine("1. Use resourceId, label, type and state as semantic selectors.")
-            appendLine("2. Never guess or use pixel X/Y coordinates.")
+            appendLine("2. Never invent or freehand pixel X/Y coordinates. For an explicitly captured screenshot, a vision model may propose a normalized bounding region (0..1) tied to the exact frame ID, source package, timestamp, display size and rotation; a local resolver must validate all of these before any target can be used.")
             appendLine("3. ref is snapshot-local and is not a durable selector; request a fresh snapshot after navigation or UI changes.")
             appendLine("4. If a selector matches multiple elements, ask the user to disambiguate.")
             appendLine("5. Editable field values are intentionally omitted. Do not infer their contents.")
@@ -54,6 +54,9 @@ object UiAgentContextBuilder {
             appendLine("9. A proposal is not authorization. ERA requires a separate user confirmation.")
             appendLine("10. Prefer structured UI data. Use visual capture only when genuinely necessary and only after the user explicitly requests it.")
             appendLine("11. Visual frames remain in process memory only; never write them to disk or upload them from this builder.")
+            appendLine("12. A visual target is only a proposal. Reject stale frames, app/package mismatches, rotation or display-size changes, ambiguous regions and confidence below 0.90.")
+            appendLine("13. Match a vision proposal against the Accessibility tree first. Use semantic ACTION_CLICK when an equivalent accessible node exists; use a visual gesture only as a separately implemented and explicitly approved fallback.")
+            appendLine("14. Re-capture and independently verify the resulting screen after any visual action. Never repeat a gesture just because its result is uncertain.")
             appendLine("COMPACT STRUCTURED UI SNAPSHOT (JSON):")
             append(compactSnapshot)
         }

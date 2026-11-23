@@ -43,6 +43,7 @@ object TaskCapabilityActionPolicy {
             CapabilityId.NATIVE_WEBVIEW to "browser.webview.click",
             CapabilityId.NATIVE_WEBVIEW to "browser.webview.fill",
             CapabilityId.NATIVE_WEBVIEW to "browser.webview.type",
+            CapabilityId.NATIVE_WEBVIEW to "browser.webview.focus_and_show_keyboard",
             CapabilityId.NATIVE_WEBVIEW to "browser.webview.press_key",
             CapabilityId.NATIVE_WEBVIEW to "browser.webview.check",
             CapabilityId.NATIVE_WEBVIEW to "browser.webview.uncheck",
@@ -53,7 +54,8 @@ object TaskCapabilityActionPolicy {
             CapabilityId.ACCESSIBILITY_UI to "accessibility.ui.approve_type",
             CapabilityId.EXTERNAL_CHROME to "browser.chrome.approve_type",
             CapabilityId.NATIVE_WEBVIEW to "browser.webview.fill",
-            CapabilityId.NATIVE_WEBVIEW to "browser.webview.type"
+            CapabilityId.NATIVE_WEBVIEW to "browser.webview.type",
+            CapabilityId.NATIVE_WEBVIEW to "browser.webview.focus_and_show_keyboard"
         ),
         TaskCapability.SHARE_DRAFT to setOf(
             CapabilityId.ANDROID_DEVICE to "device.sms.create_draft",

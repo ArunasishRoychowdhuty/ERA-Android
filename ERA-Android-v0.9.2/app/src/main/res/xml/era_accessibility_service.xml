@@ -5,6 +5,7 @@
     android:accessibilityFlags="flagReportViewIds|flagRetrieveInteractiveWindows|flagIncludeNotImportantViews"
     android:canRetrieveWindowContent="true"
     android:canTakeScreenshot="true"
+    android:canPerformGestures="true"
     android:description="@string/era_accessibility_description"
     android:notificationTimeout="250"
     android:settingsActivity="com.eraassistant.mobile.MainActivity" />

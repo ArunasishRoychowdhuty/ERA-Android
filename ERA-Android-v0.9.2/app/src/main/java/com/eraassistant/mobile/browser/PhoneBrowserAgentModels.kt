@@ -1,5 +1,7 @@
 package com.eraassistant.mobile.browser
 
+import com.eraassistant.mobile.screen.SensitiveInputPolicy
+
 data class PhoneBrowserSession(
     val tab: Int,
     val targetId: String,
@@ -70,7 +72,7 @@ data class PhoneBrowserAgentUiState(
 
 object PhoneBrowserAgentPolicy {
     private val sensitive = Regex(
-        "(?i)(password|passcode|one.?time|otp|verification.?code|security.?code|api.?key|access.?token|secret|pin|cvv|cvc|card.?number|credential)"
+        "(?i)(password|passcode|one.?time(?:.?password|.?code)|\\botp\\b|verification.?code|security.?code|api.?key|access.?token|secret|\\bpin\\b|\\bcvv\\b|\\bcvc\\b|card.?number|credential)"
     )
     private val consequential = Regex(
         "(?i)(send|publish|submit|delete|remove|purchase|checkout|place order|buy now|pay|payment|transfer|withdraw|sign in|log in|apply|confirm|authorize|subscribe|unsubscribe|cancel|পাঠাও|পাঠান|প্রকাশ|জমা|মুছ|পেমেন্ট|কেনা|অর্ডার)"
@@ -82,7 +84,33 @@ object PhoneBrowserAgentPolicy {
         sensitive.containsMatchIn(node.name) ||
         sensitive.containsMatchIn(node.tag) ||
         sensitive.containsMatchIn(node.attributes["type"].orEmpty()) ||
-        sensitive.containsMatchIn(node.attributes["autocomplete"].orEmpty())
+        sensitive.containsMatchIn(node.attributes["autocomplete"].orEmpty()) ||
+        SensitiveInputPolicy.isSensitiveField(
+            label = node.name,
+            resourceId = node.attributes["id"],
+            hint = node.attributes["placeholder"],
+            role = listOf(
+                node.role, node.tag, node.attributes["type"].orEmpty(),
+                node.attributes["autocomplete"].orEmpty()
+            ).joinToString(" ")
+        )
+
+    /**
+     * Last-mile rejection shared with Android Accessibility text entry.
+     * A confirmation can never override this credential/sensitive-data block.
+     */
+    fun textEntryRejection(node: PhoneBrowserNode, payload: String): String? {
+        if (isSensitive(node)) {
+            return "Sensitive credential, verification or payment fields are blocked. Use the site's own sign-in or Android Autofill."
+        }
+        return SensitiveInputPolicy.rejectionReason(
+            label = node.name,
+            resourceId = node.attributes["id"],
+            hint = node.attributes["placeholder"],
+            role = listOf(node.role, node.tag, node.attributes["type"].orEmpty()).joinToString(" "),
+            payload = payload
+        )
+    }
 
     fun isConsequential(node: PhoneBrowserNode): Boolean = node.consequential ||
         consequential.containsMatchIn(node.name) ||
@@ -99,7 +127,7 @@ object PhoneBrowserAgentPolicy {
         node.visible && node.clickable && !node.disabled
 
     fun canFill(node: PhoneBrowserNode): Boolean =
-        node.visible && node.editable && !node.disabled && !node.readOnly
+        node.visible && node.editable && !node.disabled && !node.readOnly && !isSensitive(node)
 
     fun canPress(node: PhoneBrowserNode): Boolean =
         node.visible && !node.disabled && (node.focusable || node.clickable || node.editable)

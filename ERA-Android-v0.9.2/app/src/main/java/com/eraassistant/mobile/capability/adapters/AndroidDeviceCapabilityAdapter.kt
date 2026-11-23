@@ -2,6 +2,9 @@ package com.eraassistant.mobile.capability.adapters
 
 import android.content.Context
 import android.os.SystemClock
+import kotlinx.coroutines.delay
+import com.eraassistant.mobile.device.DeviceActionStatus
+import com.eraassistant.mobile.device.DeviceActionErrorCode
 import com.eraassistant.mobile.capability.*
 import com.eraassistant.mobile.core.VolumeDirection
 import com.eraassistant.mobile.core.VolumeStream
@@ -94,85 +97,79 @@ class AndroidDeviceCapabilityAdapter(
 
     override suspend fun execute(request: StructuredActionRequest): StructuredActionResult {
         val start = SystemClock.elapsedRealtime()
-        return try {
-            val message = when (request.actionName) {
-                ACTION_SET_TORCH -> {
-                    val enabled = request.boolParam("enabled", false)
-                    controller.setTorch(enabled)
-                }
-                ACTION_ADJUST_VOLUME -> {
-                    val streamName = request.stringParam("stream", "MEDIA")
-                    val stream = runCatching { VolumeStream.valueOf(streamName) }.getOrDefault(VolumeStream.MEDIA)
-                    val dirName = request.stringParam("direction", "")
-                    if (dirName.isNotBlank()) {
-                        val dir = if (dirName.equals("UP", ignoreCase = true)) VolumeDirection.UP else VolumeDirection.DOWN
-                        controller.adjustVolume(stream, dir)
-                    } else {
-                        val increase = request.boolParam("increase", true)
-                        controller.adjustVolume(increase)
-                    }
-                }
-                ACTION_SET_VOLUME_PERCENT -> {
-                    val streamName = request.stringParam("stream", "MEDIA")
-                    val stream = runCatching { VolumeStream.valueOf(streamName) }.getOrDefault(VolumeStream.MEDIA)
-                    val percent = request.intParam("percent", 50)
-                    controller.setVolumePercent(stream, percent)
-                }
-                ACTION_LAUNCH_APP -> {
-                    val packageName = request.stringParam("packageName", "")
-                    val appName = request.stringParam("appName", "")
-                    if (packageName.isNotBlank()) {
-                        controller.launchApp(listOf(packageName), appName.ifBlank { packageName })
-                    } else {
-                        controller.launchAppByName(appName)
-                    }
-                }
-                ACTION_OPEN_SETTINGS -> {
-                    val action = request.stringParam("settingsAction", "android.settings.SETTINGS")
-                    val label = request.stringParam("label", "সেটিংস")
-                    controller.openSettings(action, label)
-                }
-                ACTION_OPEN_CAMERA -> controller.openCamera()
-                ACTION_OPEN_DIALER -> {
-                    val number = request.stringParam("phoneNumber", "")
-                    controller.openDialer(number)
-                }
-                ACTION_CREATE_SMS_DRAFT -> {
-                    val text = request.stringParam("message", "")
-                    controller.createSmsDraft(text)
-                }
-                ACTION_SHARE_WHATSAPP_DRAFT -> {
-                    val text = request.stringParam("message", "")
-                    controller.shareWhatsAppDraft(text)
-                }
-                ACTION_WEB_SEARCH -> controller.openWebSearch(request.stringParam("query"))
-                ACTION_MAP_SEARCH -> controller.openMapSearch(request.stringParam("query"))
-                ACTION_OPEN_WEBSITE -> controller.openWebsite(request.stringParam("url"))
-                else -> {
-                    return StructuredActionResult.failure(
-                        actionId = request.actionId,
-                        error = ExecutionError(ExecutionErrorCategory.UNSUPPORTED_CAPABILITY, "Action '${request.actionName}' not supported by AndroidDeviceCapabilityAdapter"),
-                        durationMs = SystemClock.elapsedRealtime() - start
-                    )
-                }
-            }
-            val duration = SystemClock.elapsedRealtime() - start
-            val observation = NormalizedObservation.fromSystemState(message)
-            StructuredActionResult.success(
+        val typed = controller.executeTyped(request.actionName, request.parameters)
+        if (typed.status == DeviceActionStatus.CANCELLED) {
+            return StructuredActionResult.cancelled(request.actionId, typed.message, SystemClock.elapsedRealtime() - start)
+        }
+
+        // CameraManager delivers torch state through TorchCallback; allow the callback
+        // queue to publish the actual value before collecting the post-action observation.
+        if (request.actionName == ACTION_SET_TORCH && typed.status == DeviceActionStatus.SUCCESS) {
+            delay(180L)
+        }
+        val metadata = controller.verificationMetadata(request.actionName, typed.metadata)
+        val observation = com.eraassistant.mobile.observation.NormalizedObservation.fromSystemState(
+            summary = typed.message,
+            details = metadata
+        )
+        val duration = SystemClock.elapsedRealtime() - start
+        val output = mapOf(
+            "message" to typed.message,
+            "deviceActionStatus" to typed.status.name,
+            "deviceActionErrorCode" to typed.errorCode.name
+        )
+
+        return when (typed.status) {
+            DeviceActionStatus.SUCCESS -> StructuredActionResult.success(
                 actionId = request.actionId,
-                outputData = mapOf("message" to message),
+                outputData = output,
                 observation = observation,
                 durationMs = duration
             )
-        } catch (t: Throwable) {
-            StructuredActionResult.failure(
+            DeviceActionStatus.UNSUPPORTED -> StructuredActionResult.failure(
                 actionId = request.actionId,
                 error = ExecutionError(
-                    ExecutionErrorCategory.ADAPTER_EXECUTION_FAILURE,
-                    "AndroidDeviceController execution error: ${t.message}",
-                    cause = t
+                    ExecutionErrorCategory.UNSUPPORTED_CAPABILITY,
+                    typed.message,
+                    detail = typed.errorCode.name
                 ),
-                durationMs = SystemClock.elapsedRealtime() - start
+                observation = observation,
+                durationMs = duration
+            )
+            DeviceActionStatus.UNAVAILABLE -> StructuredActionResult.failure(
+                actionId = request.actionId,
+                error = ExecutionError(
+                    when (typed.errorCode) {
+                        DeviceActionErrorCode.PERMISSION_DENIED,
+                        DeviceActionErrorCode.SECURITY_RESTRICTED -> ExecutionErrorCategory.PERMISSION_DENIED
+                        DeviceActionErrorCode.ACTIVITY_NOT_FOUND,
+                        DeviceActionErrorCode.APP_NOT_INSTALLED,
+                        DeviceActionErrorCode.APP_AMBIGUOUS,
+                        DeviceActionErrorCode.HARDWARE_UNAVAILABLE -> ExecutionErrorCategory.PRECONDITION_FAILED
+                        else -> ExecutionErrorCategory.ENVIRONMENT_ERROR
+                    },
+                    typed.message,
+                    retryable = false,
+                    detail = typed.errorCode.name
+                ),
+                observation = observation,
+                durationMs = duration
+            )
+            DeviceActionStatus.FAILURE -> StructuredActionResult.failure(
+                actionId = request.actionId,
+                error = ExecutionError(
+                    if (typed.errorCode == DeviceActionErrorCode.PERMISSION_DENIED ||
+                        typed.errorCode == DeviceActionErrorCode.SECURITY_RESTRICTED
+                    ) ExecutionErrorCategory.PERMISSION_DENIED else ExecutionErrorCategory.ADAPTER_EXECUTION_FAILURE,
+                    typed.message,
+                    retryable = false,
+                    detail = typed.errorCode.name
+                ),
+                observation = observation,
+                durationMs = duration
+            )
+            DeviceActionStatus.CANCELLED -> StructuredActionResult.cancelled(
+                request.actionId, typed.message, duration
             )
         }
     }

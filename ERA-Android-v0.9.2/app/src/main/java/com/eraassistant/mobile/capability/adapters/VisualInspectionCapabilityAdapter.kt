@@ -66,12 +66,13 @@ class VisualInspectionCapabilityAdapter(
                     val h = frame.bitmap.height
                     val pkg = frame.sourcePackage ?: "unknown"
                     val obs = NormalizedObservation(
-                        observationId = "obs_vis_${frame.capturedAtEpochMs}_${w}x${h}",
+                        observationId = "obs_vis_${frame.frameId}".take(160),
                         source = ObservationSource.VISUAL_SCREENSHOT,
                         capturedAtEpochMs = frame.capturedAtEpochMs,
                         targetPackageOrUrl = pkg,
                         summary = "Visual screenshot frame (${w}x${h})",
                         rawMetadata = mapOf(
+                            "frameId" to frame.frameId,
                             "width" to w.toString(),
                             "height" to h.toString(),
                             "sourcePackage" to pkg
@@ -80,6 +81,7 @@ class VisualInspectionCapabilityAdapter(
                     StructuredActionResult.success(
                         actionId = request.actionId,
                         outputData = mapOf(
+                            "frameId" to frame.frameId,
                             "width" to w,
                             "height" to h,
                             "sourcePackage" to pkg,

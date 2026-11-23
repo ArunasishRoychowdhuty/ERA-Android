@@ -38,6 +38,31 @@ class PreviewPlannerTest {
         assertTrue(plan.validate().isEmpty())
     }
 
+    @Test fun negatedWhatsAppPreferenceSelectsGmailInstead() = runBlocking {
+        val plan = PreviewPlanner().createPlan("Don't use WhatsApp; use Gmail.")
+        assertTrue(plan.steps.first().title.contains("email", ignoreCase = true))
+        assertTrue(plan.steps.none { it.title.contains("WhatsApp", ignoreCase = true) })
+    }
+
+    @Test fun instagramDoNotPublishConstraintRemovesPublishStep() = runBlocking {
+        val plan = PreviewPlanner().createPlan("Open Instagram, but don't publish anything.")
+        assertEquals(4, plan.steps.size)
+        assertTrue(plan.steps.none { it.title.contains("Share post", ignoreCase = true) })
+    }
+
+    @Test fun messageWithoutSendingProducesDraftOnlyPlan() = runBlocking {
+        val plan = PreviewPlanner().createPlan("Prepare a message without sending it.")
+        assertTrue(plan.steps.none { it.title.contains("Send", ignoreCase = true) })
+        assertTrue(plan.steps.all { it.risk != TaskRisk.HIGH })
+    }
+
+    @Test fun doNotLaunchOnlyExplainDoesNotCreateLaunchStep() = runBlocking {
+        val plan = PreviewPlanner().createPlan("Do not launch the app; only explain how.")
+        assertEquals(1, plan.steps.size)
+        assertTrue(plan.steps.single().title.contains("Explain", ignoreCase = true))
+        assertTrue(plan.steps.single().requiredCapabilities.isEmpty())
+    }
+
     @Test fun planCanCreateDependencyAwareExecutionCoordinator() = runBlocking {
         val plan = PreviewPlanner().createPlan("WhatsApp খুলে সাহেবকে Hi লিখে দাও")
         val coordinator = TaskExecutionCoordinator.from(plan)

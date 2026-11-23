@@ -1,4 +1,149 @@
+# Unreleased - Personal Digital Operator development
+
+- Added consent-gated screen understanding, normalized visual control parsing and a screenshot/Accessibility-fingerprint-bound one-shot gesture fallback.
+- Added deterministic account onboarding, website-form, professional-profile, lead-discovery and client-reply workflow templates.
+- Added AES-GCM encrypted Room CRM persistence foundation with consent-gated mutations and credential-like payload rejection.
+- Extended visual target tests, workflow selection tests and CRM policy tests.
+- Existing sensitive input hard-block and Android system IME bridge are integrated with the browser capability path.
+- Device-level OEM keyboard/display-coordinate QA and the full CRM UI / site-specific workflows remain pending.
+
 # Changelog
+
+## v1.0.2 — Supervised personal assistant and encrypted productivity (2026-11-23)
+
+### Consequential UI actions and voice approval
+- Added a dedicated consequential-control classifier for Send, Submit, Publish, Delete, Payment, Transfer and Purchase targets.
+- A consequential action is prepared from a fresh, full-fidelity screen snapshot and an exact unique target. ERA reads only non-editable visible labels when constructing the user-facing summary.
+- The final spoken OK is exact, one-shot, package/selector/action/fingerprint-bound and expires after 30 seconds. Cancel, unrelated speech, expiry, screen changes and app restart revoke it.
+- After OK, ERA moves to the background so the prior target app can regain focus. Accessibility re-observes the live screen and dispatches only if the fresh fingerprint still matches. A mismatch fails closed.
+- Payment, transfer and purchase approvals require exactly one distinct visible currency amount. Missing or multiple visible amounts are treated as ambiguous and block automated dispatch. ERA never reads editable fields to infer a payment amount.
+- Non-consequential click/type remains behind the existing exact observation approval; consequential actions require the additional spoken confirmation.
+- The existing CRITICAL handoff path now permits only the separately confirmed action, while all other critical paths remain blocked pending final approval.
+
+### Sensitive-input and persistence protection
+- Extended the SensitiveInputPolicy with raw card-number-like patterns and common UPI virtual-address suffixes, in addition to password/OTP/PIN/CVV, payment, bank, API/access-token fields and credential-like payload checks.
+- Encrypted pending UI text payloads with AES-GCM before placing them in SharedPreferences; failed encryption or decryption fails closed and the pending action is cleared.
+- Encrypted existing PersistentAgentMemory JSON at rest with an Android Keystore key. Existing plaintext records are migrated to the encrypted prefix on successful read/write; the implementation does not fall back to plaintext when encryption fails.
+- Added a new Room database for reminder and managed-memory metadata. Reminder titles/notes and managed-memory title/content are stored as AES-256-GCM ciphertext; the key is non-exportable in Android Keystore.
+- Removed destructive Room auto-migration fallback. A schema change without a declared migration now fails rather than silently deleting persisted user data.
+
+### Reminders, notifications and calendar
+- Added AlarmManager exact scheduling where the user has granted Android exact-alarm access; otherwise schedules a unique WorkManager one-time fallback with Android's battery-policy delay caveat.
+- Added reminder delivery receiver, private notifications and rescheduling after reboot, app replacement, clock/timezone changes and exact-alarm grant changes.
+- Added notification permission and exact-alarm settings flows. Saved reminders are retained if notification permission is denied.
+- Added one-at-a-time explicit export of a selected reminder into a visible writable Android Calendar. ERA requests Calendar permissions only when the user initiates export and does not perform background calendar reads/writes.
+
+### Personal workspace and tests
+- Added a Personal bottom-navigation destination containing reminder creation/list/delete, Calendar export, encrypted managed-memory creation/list/delete and confirm-before-clear controls.
+- Added existing internal Agent Memory list/delete/clear controls for its memory categories.
+- Added JVM tests for exact voice OK, critical-risk two-gate behavior, consequential control recognition, visible payment amount ambiguity and credential/payment payload blocking.
+- Added Android instrumentation tests for Keystore encryption and Room persisted ciphertext, Personal navigation, plus an opt-in live Accessibility capture check that assumes the device owner already enabled the ERA Accessibility service and consent.
+- Verification: Gradle JVM unit tests **252/252 pass** across **47 suites**; 0 failures, 0 errors, 0 skipped. Both :app:assembleDebug and :app:assembleDebugAndroidTest succeeded. git diff --check passed.
+- Debug APK: **11 MB**, copied to ~/storage/downloads/ERA-Android-v1.0.2-personal-assistant.apk; package com.eraassistant.mobile.debug; versionCode **19**, versionName **1.0.2-debug**, minSdk **26**, targetSdk **35**. APK Signature Scheme V2 verified.
+- Debug APK SHA-256: 4fb8e0fef33e2d2767e12046f9ef358ca5e96b4c689b7811658ed852c3e37423.
+- Android instrumentation APK: **414 KB**, copied to ~/storage/downloads/ERA-Android-v1.0.2-personal-assistant-androidTest.apk; SHA-256: 0bcbdfaeef6184f84359c0b3e9c2ca1761db7c39754c85575e45d64486d22a4a.
+- ADB returned no connected physical device or emulator. Android instrumentation APK assembled successfully, but instrumentation and live Accessibility tests were **not executed**. The live Accessibility smoke test requires the user to enable ERA's Accessibility service and screen-inspection consent on a connected target.
+
+## v1.0.1 — Household workflow and final UI-action policy (2026-11-23)
+
+### Home Management service
+- Added HomeManagementService for consent-gated household task creation, status updates, deletion, inventory quantity upsert and household routine storage.
+- Supports bounded task/inventory collections, due-date validation (maximum one year ahead), non-sensitive field validation and independent routine slots.
+- Structured timestamps are encoded in base36 strings and generated IDs are bounded so app-private memory privacy scrubbing does not corrupt metadata.
+- Increased DomainMemoryService payload bound to 3,500 characters, within PersistentAgentMemory's 4,000-character ceiling, to support structured household collections.
+- Added UserProfileService with explicit-consent profile bundle save/read/update/delete for non-sensitive display/preferred name, language, timezone, communication style, interests and accessibility preference. Invalid lengths, control characters, excessive interests and credential-like data are rejected.
+
+### Final UI-action gate and sensitive-input protection
+- Added AutonomyExecutionPolicy to the Accessibility overlay dispatch path. The gate evaluates risk, fresh one-shot approval, exact package/action binding, current observation, screen-inspection consent and active service state before consuming the approval and invoking an accessibility action.
+- Consequential controls are CRITICAL and handed back for manual completion; click/type operations are HIGH risk and require the fresh exact one-shot approval; reversible scroll remains approval-bound.
+- Added SensitiveInputPolicy to UI proposal validation, PendingUiActionStore approval and final accessibility dispatch. Password, passcode, OTP, PIN, CVV/CVC, card/payment, bank account, UPI and API/access-token fields and credential-like payloads are blocked before they are stored or entered.
+- Added regression coverage for sensitive UI fields, credential-like text, safe non-sensitive field entry, Home Management CRUD/inventory/routine persistence and User Profile consent/update/delete validation.
+
+### Verification
+- Gradle unit tests: 244/244 passed across 45 suites; 0 failures, 0 errors, 0 skipped.
+- Debug and Android instrumentation APK assembly succeeded. Standalone source smoke suite passed: Core 36, Agent Runtime 41, Pending UI 25, permission-flow 8/8, Android XML 4/4. `git diff --check` passed.
+- Debug APK (10 MB): `~/storage/downloads/ERA-Android-v1.0.1-home-management.apk`; package `com.eraassistant.mobile.debug`; versionCode 18; versionName `1.0.1-debug`; minSdk 26; targetSdk 35. V2 signature verified.
+- SHA-256: `25073e0f94420fe815db986c6ca67fb1a4b1345f1e70c5328a93a9c5692d6f33`.
+- Instrumentation APK builds (411 KB) but tests were not run because no ADB device/emulator is connected. Android Lint is not verified. No APK install or GitHub push was performed.
+- See [v1.0.1 release architecture](docs/ERA_V1.0.1_HOME_AUTONOMY.md).
+
+## v1.0.0 — Autonomous OS Assistant Core (2026-11-23)
+
+### Domain and planning architecture
+- Added a domain intent classifier for Android OS, Personal Profile, Home Management, Communication, Productivity, Files, Web and unknown requests. It emits confidence, risk, explicit constraints, detected targets and unresolved inputs.
+- Added a two-pass planning policy wrapper. The first pass classifies intent/domain/risk; the second validates and guards the proposed plan. Explicit draft-only/explanation-only/no-delete constraints block conflicting steps, while consequential steps are promoted to high risk, made non-retryable and approval-gated.
+- Wired domain analysis and plan enforcement into complex-task preview. It now displays inferred domains, confidence, risk, constraints, unresolved inputs, policy warnings and blocked plan steps.
+
+### Tool selection and execution gate
+- Added a deterministic tool selector that resolves only exact local TaskCapability-to-CapabilityId/action bindings already declared by the capability policy and registered in CapabilityRegistry.
+- Selection considers live availability, missing permissions, offline capability, user preference and data-sensitivity ceiling. Missing permissions are surfaced for user setup; the selector does not request/grant permission or dispatch tools.
+- Added a central autonomy gate inside TaskExecutionCoordinator before journal claim/adapter side effects. It blocks missing permissions, unavailable tools, stale observations and mismatched/expired approvals; it checks exact approval binding without consuming the receipt, then retains the existing atomic one-time consume immediately before dispatch. High-risk actions wait for exact approval; critical actions always require user handoff without adapter invocation.
+
+### Domain memory and privacy
+- Added distinct persistent categories for User Profile, Home Management, Household Routines and People Context.
+- Added a consent-gated domain memory service with a field allowlist, bounded retention (1–365 days), expiry-on-read and delete/clear methods.
+- Passwords, OTPs, tokens, credential-like values, long identity-number-like values, email/contact fields, precise address/location, bank and medical fields are excluded from this domain-memory API.
+- Domain memory currently uses the existing app-private SharedPreferences backing store; it is scrubbed and bounded but is not an encrypted vault. Async/Room migration remains future work.
+
+### Verification and boundaries
+- Added unit tests for domain classification, two-pass constraints, tool choice/readiness/privacy, autonomy gate decisions and domain-memory consent/expiry.
+- Final Gradle run: 230/230 unit tests pass (43 suites); `assembleDebug` and `assembleDebugAndroidTest` build successfully.
+- Standalone source smoke suite: Core 36 assertions, Agent Runtime 41, Pending UI 25, permission-flow 8/8 and Android XML 4/4; all checks passed. `git diff --check` passes.
+- Debug APK (11 MB): `~/storage/downloads/ERA-Android-v1.0.0-autonomy-core.apk`; package `com.eraassistant.mobile.debug`; versionCode 17; versionName `1.0.0-debug`; minSdk 26; targetSdk 35. V2 signature verified. SHA-256 `c3f436fd5cf536d83364c4fa50793e266d063d87b2c78df1ca8832955bbb8761`.
+- Android instrumentation APK is built but not executed because no ADB target is connected. Android Lint was not verified.
+- The tool selector is wired into the planning preview, not a general-purpose arbitrary action dispatcher. Existing coordinator/journal/approval boundaries remain authoritative.
+- Home Management memory is a data/plan foundation only: calendar alarms, smart-home/IoT vendor adapters, recurring bill integrations and household-service orchestration are not implemented in this release.
+- No root or Android security bypass is added. API/OS-specific permissions remain user-granted; restricted actions remain user-confirmed or user-operated.
+
+## v0.9.4 — Functional reliability and guarded plan dispatch (2026-11-23)
+
+### Execution correctness
+- Added typed device-operation outcomes and structured error codes; missing apps, missing hardware, unsupported actions and Android permission failures are not converted into SUCCESS.
+- Compiled direct action steps now carry action-specific acceptance criteria.
+- Added independent post-action verification for CameraManager torch callback state and AudioManager volume state. App-launch and external-intent handoffs remain WAITING_USER where independent outcome verification is not available through the granted Android APIs.
+- Compound command sequence progression now consumes typed task-ledger outcomes rather than localized message substring matching. Verification uncertainty can continue to an independent next step; true failure, cancellation, recovery-required and not-dispatched outcomes stop the sequence with partial progress.
+
+### Planning, identity and memory
+- Added unique taskRunId per new execution, separate from plan fingerprint. Reusing a run ID explicitly resumes that run; default starts an independent run. Legacy fingerprint-based resume remains available through an explicit compatibility flag.
+- Standardized workflow memory timestamps on epoch milliseconds; schema-v1 seconds are migrated once.
+- App launch readiness is checked against packages requested in the plan, not the mere existence of a generic launcher app.
+- Planner handles common negative app preferences, explanation-only requests and draft-only/no-send requests.
+- Task Monitor approval dispatches only reversible, locally compiled known-app launch steps through the existing coordinator and journal. Unsupported multi-step operations remain manual-review only.
+
+### Instrumentation and remaining boundaries
+- Added Android instrumentation smoke test source for activity launch, four-tab navigation and selected-tab restoration after Activity recreation.
+- Current foreground voice recognition remains a user-started SpeechRecognizer session; wake-word remains unimplemented.
+- SAF remains read/list/preview; notification listener/actions remain unsupported; Autofill is not full Credential Manager integration; workflow learning remains suggestion-only; Remote Gateway V3 remains presence/heartbeat only.
+- SharedPreferences persistence still uses synchronous commit in several stores; migration to serialized IO/Room remains incomplete. Journal capacity remains fail-closed at 500 records, without archival/pagination.
+- Large MainActivity and activity-owned sequence/browser/voice lifecycle state still need a progressive ViewModel/service ownership refactor.
+
+### Verification
+- See docs/ERA_V0.9.4_RELIABILITY_AUDIT.md for evidence and the distinction between JVM tests, instrumentation builds, emulator tests and physical-device tests.
+- Gradle `:app:testDebugUnitTest`: **212/212 PASS, 0 failures, 0 ignored**.
+- Standalone smoke suites: P0 **73 PASS**; Core **36 assertions PASS**; Agent Runtime **41 assertions PASS**; Pending UI **25 assertions PASS**; Permission-flow **8 checks PASS**; Android XML **4/4 parse PASS**; `run-all-smoke.sh` exit code 0.
+- `:app:assembleDebug` and `:app:assembleDebugAndroidTest`: **BUILD SUCCESSFUL**. Android instrumentation smoke source compiles and packages, but is not executed because `adb devices -l` has no connected target.
+- Debug APK: `~/storage/downloads/ERA-Android-v0.9.4-reliability-upgrade.apk` (10 MB), package `com.eraassistant.mobile.debug`, versionCode `16`, versionName `0.9.4-debug`, minSdk `26`, targetSdk `35`.
+- APK SHA-256: `28888471aadf5be54e0e5129c92a005bf0bc1edcd6c00a44e40a0936cbd30fb3`; V2 signature verified with the same Android Debug certificate used by previous builds.
+- Instrumentation APK SHA-256: `72c286bc087c96ea1fcd2bd90a61dc45c361ef7ef521368364246147d8e5dce4`.
+- `git diff --check`: PASS. Android Lint did not complete: `:app:lintAnalyzeDebug` stalled without producing a report and was terminated; no Lint PASS is claimed.
+- Android instrumentation is not considered passed unless `connectedDebugAndroidTest` executes on a configured emulator or physical device.
+
+## v0.9.3 — UI refinement and navigation polish (2026-11-22)
+
+### Visual system
+- Applied a cohesive midnight color palette with violet/teal accents and a consistent rounded Material 3 shape system.
+- Refined the top bar, page headings, Home hero gradient, status capsules and bottom navigation surfaces.
+- Added animated fade/slide transitions between Home, Agents, Screen and Settings, plus animated selected-tab color states.
+- Moved contact search to Agents; the Home page now leads with the command-centre hero and primary command controls.
+- Preserved existing feature sections, event callbacks, permissions and approval workflows.
+
+### Build and verification
+- App versionCode 15, versionName 0.9.3; debug versionName 0.9.3-debug.
+- UI Kotlin compilation and the 182-test Gradle unit suite passed (0 failures, 0 ignored).
+- Debug APK assembled and verified with APK Signature Scheme v2; package `com.eraassistant.mobile.debug`, versionCode `15`, versionName `0.9.3-debug`.
+- APK staged at `~/storage/downloads/ERA-Android-v0.9.3-smooth-ui.apk` (9.9 MB); SHA-256 `8f933eb98e3fd83dfe09f6f8015aa1e879765265b049553b0074882ea7478288`.
+- Static Android lint was not completed in the Termux run because lint analysis stalled; it is not reported as passed.
+- Physical-device visual review of the new screens remains pending; the APK is not installed.
 
 ## v0.9.2 — Remote Connectivity V3 Gateway and Client Hardening (2026-11-22)
 

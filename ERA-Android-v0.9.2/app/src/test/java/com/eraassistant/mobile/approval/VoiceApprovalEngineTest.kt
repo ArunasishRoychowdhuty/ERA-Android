@@ -83,9 +83,24 @@ class VoiceApprovalEngineTest {
     }
 
     @Test
+    fun okAndBengaliYesAreExactOneShotApprovals() {
+        val okPrompt = request()
+        assertEquals(
+            VoiceApprovalResult.Approved(okPrompt.requestId),
+            engine.consumeSpokenCommand("OK", "action|target|value")
+        )
+        val bengaliPrompt = request()
+        assertEquals(
+            VoiceApprovalResult.Approved(bengaliPrompt.requestId),
+            engine.consumeSpokenCommand("ঠিক আছে", "action|target|value")
+        )
+    }
+
+    @Test
     fun bengaliApprovalAndDenialPhrasesAreRecognizedExactly() {
         assertTrue(VoiceApprovalEngine.isApprovalOrCancellationPhrase("অনুমোদিত।"))
         assertTrue(VoiceApprovalEngine.isApprovalOrCancellationPhrase("বাতিল"))
+        assertTrue(VoiceApprovalEngine.isApprovalOrCancellationPhrase("OK"))
         assertFalse(VoiceApprovalEngine.isApprovalOrCancellationPhrase("হ্যাঁ, সব করে দাও"))
     }
 }
